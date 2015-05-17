@@ -77,12 +77,18 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     }
 }
 
+pub struct Identifier<PS, P>
+    where PS: Parser<Output=char>
+        , P: Parser<Input=PS::Input, Output=char> {
+    start: PS,
+    rest: P,
+    reserved: Vec<Cow<'static, str>>
+}
+
 pub struct LanguageDef<IS, I>
     where I: Parser<Output=char>
         , IS: Parser<Input=I::Input, Output=char> {
-    pub ident_start: IS,
-    pub ident: I,
-    pub reserved: Vec<Cow<'static, str>>,
+    pub ident: Identifier<IS, I>,
     pub comment_line: &'static str,
     pub comment_start: &'static str,
     pub comment_end: &'static str
@@ -105,17 +111,15 @@ impl <'a, I> Env<'a, I>
         where A: Parser<Input=I, Output=char> + 'a
             , B: Parser<Input=I, Output=char> + 'a {
         let LanguageDef {
-            ident_start,
-            ident,
-            reserved,
+            ident: Identifier { start: ident_start, rest: ident_rest, reserved: reserved_ident },
             comment_line,
             comment_start,
             comment_end
         } = def;
         Env {
             ident_start: RefCell::new(Box::new(ident_start)),
-            ident: RefCell::new(Box::new(ident)),
-            reserved: reserved,
+            ident: RefCell::new(Box::new(ident_rest)),
+            reserved: reserved_ident,
             comment_line: comment_line,
             comment_start: comment_start,
             comment_end: comment_end,
@@ -272,9 +276,11 @@ mod tests {
     
     fn env() -> Env<'static, &'static str> {
         Env::new(LanguageDef { 
-            ident_start: letter(),
-            ident: alpha_num(),
-            reserved: ["if", "then", "else", "let", "in", "type"].iter().map(|x| (*x).into()).collect(),
+            ident: Identifier {
+                start: letter(),
+                rest: alpha_num(),
+                reserved: ["if", "then", "else", "let", "in", "type"].iter().map(|x| (*x).into()).collect()
+            },
             comment_start: "/*",
             comment_end: "*/",
             comment_line: "//"
