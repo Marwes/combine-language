@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::borrow::Cow;
 use parser_combinators::*;
 use parser_combinators::char as pc;
-use parser_combinators::combinator::{Between, FnParser, Skip};
+use parser_combinators::combinator::{Between, FnParser, NotFollowedBy, Skip, Try};
 use parser_combinators::primitives::{Consumed, Error, Stream, State};
 
 
@@ -77,6 +77,8 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     }
 }
 
+pub type Reserved<'a, 'b, I> = Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy<EnvParser<'a, 'b, I, char>>>>>;
+
 pub struct Identifier<PS, P>
     where PS: Parser<Output=char>
         , P: Parser<Input=PS::Input, Output=char> {
@@ -85,10 +87,13 @@ pub struct Identifier<PS, P>
     reserved: Vec<Cow<'static, str>>
 }
 
-pub struct LanguageDef<IS, I>
+pub struct LanguageDef<IS, I, OS, O>
     where I: Parser<Output=char>
-        , IS: Parser<Input=I::Input, Output=char> {
+        , IS: Parser<Input=I::Input, Output=char>
+        , O: Parser<Input=I::Input, Output=char>
+        , OS: Parser<Input=I::Input, Output=char> {
     pub ident: Identifier<IS, I>,
+    pub op: Identifier<OS, O>,
     pub comment_line: &'static str,
     pub comment_start: &'static str,
     pub comment_end: &'static str
@@ -98,6 +103,9 @@ pub struct Env<'a, I> {
     ident_start: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
     ident: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
     reserved: Vec<Cow<'static, str>>,
+    op_start: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
+    op: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
+    op_reserved: Vec<Cow<'static, str>>,
     comment_line: &'static str,
     comment_start: &'static str,
     comment_end: &'static str,
@@ -107,11 +115,14 @@ pub struct Env<'a, I> {
 impl <'a, I> Env<'a, I>
     where I: Stream<Item=char> {
 
-    pub fn new<A, B>(def: LanguageDef<A, B>) -> Env<'a, I>
+    pub fn new<A, B, C, D>(def: LanguageDef<A, B, C, D>) -> Env<'a, I>
         where A: Parser<Input=I, Output=char> + 'a
-            , B: Parser<Input=I, Output=char> + 'a {
+            , B: Parser<Input=I, Output=char> + 'a
+            , C: Parser<Input=I, Output=char> + 'a
+            , D: Parser<Input=I, Output=char> + 'a {
         let LanguageDef {
-            ident: Identifier { start: ident_start, rest: ident_rest, reserved: reserved_ident },
+            ident: Identifier { start: ident_start, rest: ident_rest, reserved: ident_reserved },
+            op: Identifier { start: op_start, rest: op_rest, reserved: op_reserved },
             comment_line,
             comment_start,
             comment_end
@@ -119,7 +130,10 @@ impl <'a, I> Env<'a, I>
         Env {
             ident_start: RefCell::new(Box::new(ident_start)),
             ident: RefCell::new(Box::new(ident_rest)),
-            reserved: reserved_ident,
+            reserved: ident_reserved,
+            op_start: RefCell::new(Box::new(op_start)),
+            op: RefCell::new(Box::new(op_rest)),
+            op_reserved: op_reserved,
             comment_line: comment_line,
             comment_start: comment_start,
             comment_end: comment_end,
@@ -139,18 +153,19 @@ impl <'a, I> Env<'a, I>
         WhiteSpace { env: self }
     }
 
-    pub fn ident<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
-        self.parser(Env::<I>::parse_ident)
-    }
     pub fn symbol<'b>(&'b self, name: &'static str) -> Lex<'a, 'b, pc::String<I>> {
         self.lex(string(name))
     }
 
-    pub fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
+    pub fn ident<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
+        self.parser(Env::<I>::parse_ident)
+    }
+
+    fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
         let mut start = self.ident_start.borrow_mut();
         let mut rest = self.ident.borrow_mut();
         let mut ident_parser = self.lex((&mut *start).and(many(&mut *rest)))
-            .map(|(c, mut s): (char, ::std::string::String)| { s.insert(0, c); s });
+            .map(|(c, mut s): (char, String)| { s.insert(0, c); s });
         let (s, input) = try!(ident_parser.parse_state(input));
         match self.reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
@@ -158,6 +173,42 @@ impl <'a, I> Env<'a, I>
             }
             None => Ok((s, input))
         }
+    }
+
+    pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
+        self.lex(try(string(name).skip(not_followed_by(self.parser(Env::<I>::ident_letter)))))
+    }
+
+    fn ident_letter(&self, input: State<I>) -> ParseResult<char, I> {
+        self.ident.borrow_mut()
+            .parse_state(input)
+    }
+
+    pub fn op<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
+        self.parser(Env::<I>::parse_op)
+    }
+
+    fn parse_op(&self, input: State<I>) -> ParseResult<String, I> {
+        let mut start = self.op_start.borrow_mut();
+        let mut rest = self.op.borrow_mut();
+        let mut op_parser = self.lex((&mut *start).and(many(&mut *rest)))
+            .map(|(c, mut s): (char, String)| { s.insert(0, c); s });
+        let (s, input) = try!(op_parser.parse_state(input));
+        match self.op_reserved.iter().find(|r| **r == s) {
+            Some(ref _reserved) => {
+                Err(input.map(|input| ParseError::new(input.position, Error::Expected("operator".into()))))
+            }
+            None => Ok((s, input))
+        }
+    }
+
+    pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
+        self.lex(try(string(name).skip(not_followed_by(self.parser(Env::<I>::op_letter)))))
+    }
+
+    fn op_letter(&self, input: State<I>) -> ParseResult<char, I> {
+        self.op.borrow_mut()
+            .parse_state(input)
     }
 
     pub fn string_literal<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
@@ -219,7 +270,7 @@ impl <'a, I> Env<'a, I>
         self.lex(parser(Env::integer_parser))
     }
     fn integer_parser(input: State<I>) -> ParseResult<i64, I> {
-        let (s, input) = try!(many1::<::std::string::String, _>(digit())
+        let (s, input) = try!(many1::<String, _>(digit())
             .expected("integer")
             .parse_state(input));
         let mut n = 0;
@@ -236,7 +287,7 @@ impl <'a, I> Env<'a, I>
     fn float_parser(input: State<I>) -> ParseResult<f64, I> {
         let i = parser(Env::<I>::integer_parser).map(|x| x as f64);
         let fractional = many(digit())
-            .map(|digits: ::std::string::String| {
+            .map(|digits: String| {
                 let mut magnitude = 1.0;
                 digits.chars().fold(0.0, |acc, d| {
                     magnitude /= 10.0;
@@ -281,6 +332,11 @@ mod tests {
                 rest: alpha_num(),
                 reserved: ["if", "then", "else", "let", "in", "type"].iter().map(|x| (*x).into()).collect()
             },
+            op: Identifier {
+                start: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
+                rest: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
+                reserved: ["+", "-", "*", "/"].iter().map(|x| (*x).into()).collect()
+            },
             comment_start: "/*",
             comment_end: "*/",
             comment_line: "//"
@@ -299,5 +355,28 @@ mod tests {
         let result = env().integer()
             .parse("213  ");
         assert_eq!(result, Ok((213, "")));
+    }
+
+    #[test]
+    fn identifier() {
+        let e = env();
+        let result = e.ident()
+            .parse("a12bc");
+        assert_eq!(result, Ok(("a12bc".to_string(), "")));
+        assert!(e.ident().parse("1bcv").is_err());
+        assert!(e.ident().parse("if").is_err());
+        assert_eq!(e.reserved("if").parse("if"), Ok(("if", "")));
+        assert!(e.reserved("if").parse("ifx").is_err());
+    }
+
+    #[test]
+    fn operator() {
+        let e = env();
+        let result = e.op()
+            .parse("++  ");
+        assert_eq!(result, Ok(("++".to_string(), "")));
+        assert!(e.ident().parse("+").is_err());
+        assert_eq!(e.reserved_op("-").parse("-       "), Ok(("-", "")));
+        assert!(e.reserved_op("-").parse("--       ").is_err());
     }
 }
