@@ -77,6 +77,17 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     }
 }
 
+pub struct LanguageDef<IS, I>
+    where I: Parser<Output=char>
+        , IS: Parser<Input=I::Input, Output=char> {
+    pub ident_start: IS,
+    pub ident: I,
+    pub reserved: Vec<Cow<'static, str>>,
+    pub comment_line: &'static str,
+    pub comment_start: &'static str,
+    pub comment_end: &'static str
+}
+
 pub struct Env<'a, I> {
     ident_start: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
     ident: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
@@ -89,6 +100,28 @@ pub struct Env<'a, I> {
 
 impl <'a, I> Env<'a, I>
     where I: Stream<Item=char> {
+
+    pub fn new<A, B>(def: LanguageDef<A, B>) -> Env<'a, I>
+        where A: Parser<Input=I, Output=char> + 'a
+            , B: Parser<Input=I, Output=char> + 'a {
+        let LanguageDef {
+            ident_start,
+            ident,
+            reserved,
+            comment_line,
+            comment_start,
+            comment_end
+        } = def;
+        Env {
+            ident_start: RefCell::new(Box::new(ident_start)),
+            ident: RefCell::new(Box::new(ident)),
+            reserved: reserved,
+            comment_line: comment_line,
+            comment_start: comment_start,
+            comment_end: comment_end,
+            _marker: PhantomData
+        }
+    }
 
     fn parser<'b, T>(&'b self, parser: fn (&Env<'a, I>, State<I>) -> ParseResult<T, I>) -> EnvParser<'a, 'b, I, T> {
         EnvParser { env: self, parser: parser }
@@ -236,19 +269,16 @@ impl <'a, I> Env<'a, I>
 mod tests {
     use super::*;
     use parser_combinators::*;
-    use std::cell::RefCell;
-    use std::marker::PhantomData;
     
     fn env() -> Env<'static, &'static str> {
-        Env {
-            ident_start: RefCell::new(Box::new(letter())),
-            ident: RefCell::new(Box::new(alpha_num())),
+        Env::new(LanguageDef { 
+            ident_start: letter(),
+            ident: alpha_num(),
             reserved: ["if", "then", "else", "let", "in", "type"].iter().map(|x| (*x).into()).collect(),
             comment_start: "/*",
             comment_end: "*/",
-            comment_line: "//",
-            _marker: PhantomData
-        }
+            comment_line: "//"
+        })
     }
 
     #[test]
