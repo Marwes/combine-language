@@ -211,9 +211,30 @@ impl <'a, I> Env<'a, I>
             .parse_state(input)
     }
 
+    pub fn char_literal<'b>(&'b self) -> EnvParser<'a, 'b, I, char> {
+        self.parser(Env::<I>::char_literal_parser)
+    }
+
+    fn char_literal_parser(&self, input: State<I>) -> ParseResult<char, I> {
+        self.lex(between(string("\'"), string("\'"), parser(Env::<I>::char)))
+            .expected("character")
+            .parse_state(input)
+    }
+
+    fn char(input: State<I>) -> ParseResult<char, I> {
+        let (c, input) = try!(parser(any_char).parse_state(input));
+        let mut back_slash_char = satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
+        match c {
+            '\\' => input.combine(|input| back_slash_char.parse_state(input)),
+            '\''  => unexpected("'").parse_state(input.into_inner()).map(|_| unreachable!()),
+            _    => Ok((c, input))
+        }
+    }
+
     pub fn string_literal<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
         self.parser(Env::<I>::string_literal_parser)
     }
+
     fn string_literal_parser(&self, input: State<I>) -> ParseResult<String, I> {
         self.lex(between(string("\""), string("\""), many(parser(Env::<I>::string_char))))
             .parse_state(input)
@@ -221,19 +242,7 @@ impl <'a, I> Env<'a, I>
 
     fn string_char(input: State<I>) -> ParseResult<char, I> {
         let (c, input) = try!(parser(any_char).parse_state(input));
-        let mut back_slash_char = satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some()).map(|c| {
-            match c {
-                '"' => '"',
-                '\\' => '\\',
-                '/' => '/',
-                'b' => '\u{0008}',
-                'f' => '\u{000c}',
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                c => c//Should never happen
-            }
-        });
+        let mut back_slash_char = satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_state(input)),
             '"'  => unexpected("\"").parse_state(input.into_inner()).map(|_| unreachable!()),
@@ -320,6 +329,21 @@ impl <'a, I> Env<'a, I>
     }
 }
 
+fn escape_char(c: char) -> char {
+    match c {
+        '\'' => '\'',
+        '"' => '"',
+        '\\' => '\\',
+        '/' => '/',
+        'b' => '\u{0008}',
+        'f' => '\u{000c}',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        c => c//Should never happen
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +372,18 @@ mod tests {
         let result = env().string_literal()
             .parse(r#""abc\n\r213" "#);
         assert_eq!(result, Ok(("abc\n\r213".to_string(), "")));
+    }
+
+    #[test]
+    fn char_literal() {
+        let e = env();
+        let mut parser = e.char_literal();
+        assert_eq!(parser.parse("'a'"), Ok(('a', "")));
+        assert_eq!(parser.parse(r#"'\n'"#), Ok(('\n', "")));
+        assert_eq!(parser.parse(r#"'\\'"#), Ok(('\\', "")));
+        assert!(parser.parse(r#"'\1'"#).is_err());
+        assert_eq!(parser.parse(r#"'"'"#), Ok(('"', "")));
+        assert!(parser.parse(r#"'\"'"#).is_err());
     }
 
     #[test]
