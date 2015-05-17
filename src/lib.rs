@@ -4,7 +4,8 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use parser_combinators::*;
-use parser_combinators::combinator::{FnParser, Skip};
+use parser_combinators::char as pc;
+use parser_combinators::combinator::{Between, FnParser, Skip};
 use parser_combinators::primitives::{Consumed, Error, Stream, State};
 
 
@@ -149,6 +150,31 @@ impl <'a, I> Env<'a, I>
         }
     }
 
+    pub fn angles<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+        where P: Parser<Input=I> {
+        self.between("<", ">", parser)
+    }
+    pub fn braces<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+        where P: Parser<Input=I> {
+        self.between("{", "}", parser)
+    }
+    
+    pub fn brackets<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+        where P: Parser<Input=I> {
+        self.between("[", "]", parser)
+    }
+
+    pub fn parens<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+        where P: Parser<Input=I> {
+        self.between("(", ")", parser)
+    }
+
+    fn between<'b, P>(&'b self, start: &'static str, end: &'static str, parser: P)
+        -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+        where P: Parser<Input=I> {
+        between(self.lex(string(start)), self.lex(string(end)), parser)
+    }
+
     pub fn integer<'b>(&'b self) -> Lex<'a, 'b, FnParser<I, fn (State<I>) -> ParseResult<i64, I>>> {
         self.lex(parser(Env::integer_parser))
     }
@@ -236,4 +262,3 @@ mod tests {
         assert_eq!(result, Ok((213, "")));
     }
 }
-
