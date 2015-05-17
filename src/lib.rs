@@ -105,6 +105,9 @@ impl <'a, I> Env<'a, I>
     pub fn ident<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
         self.parser(Env::<I>::parse_ident)
     }
+    pub fn symbol<'b>(&'b self, name: &'static str) -> Lex<'a, 'b, pc::String<I>> {
+        self.lex(string(name))
+    }
 
     pub fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
         let mut start = self.ident_start.borrow_mut();
