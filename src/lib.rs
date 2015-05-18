@@ -55,8 +55,11 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
         let comment_end = self.env.comment_end;
         let comment_line = self.env.comment_line;
         let first_char = comment_start.chars().next().unwrap();
-        let linecomment = try(string(comment_line)).and(skip_many(satisfy(|c| c != '\n'))).map(|_| ());
-        let blockcomment: &mut Parser<Input=I, Output=()> = &mut try(string(comment_start)).then(|_| parser(|input| {
+        let linecomment: &mut Parser<Input=I, Output=()> = &mut try(string(comment_line))
+            .and(skip_many(satisfy(|c| c != '\n')))
+            .map(|_| ());
+        let blockcomment: &mut Parser<Input=I, Output=()> = &mut try(string(comment_start))
+            .then(|_| parser(|input| {
             let mut input = Consumed::Empty(input);
             loop {
                 match input.clone().combine(|input| satisfy(|c| c != first_char).parse_state(input)) {
@@ -307,24 +310,27 @@ impl <'a, I> Env<'a, I>
                 })
             });
 
-        let exp = satisfy(|c| c == 'e' || c == 'E')
-            .with(optional(string("-")).and(parser(Env::<I>::integer_parser)));
         optional(string("-"))
             .and(i)
             .map(|(sign, n)| if sign.is_some() { -n } else { n })
             .and(optional(string(".")).with(fractional))
-            .map(|(x, y)| if x > 0.0 { x + y } else { x - y })
-            .and(optional(exp))
-            .map(|(n, exp_option)| {
-                match exp_option {
-                    Some((sign, e)) => {
-                        let e = if sign.is_some() { -e } else { e };
-                        n * 10.0f64.powi(e as i32)
-                    }
-                    None => n
-                }
-            })
-            .expected("float")
+            .then(|(x, y)| parser(move |input| {
+                let n = if x > 0.0 { x + y } else { x - y };
+                let exp = satisfy(|c| c == 'e' || c == 'E')
+                    .with(optional(string("-")).and(parser(Env::<I>::integer_parser)));
+                    optional(exp)
+                    .map(|exp_option| {
+                        match exp_option {
+                            Some((sign, e)) => {
+                                let e = if sign.is_some() { -e } else { e };
+                                n * 10.0f64.powi(e as i32)
+                            }
+                            None => n
+                        }
+                    })
+                    .expected("float")
+                    .parse_state(input)
+            }))
             .parse_state(input)
     }
 }
