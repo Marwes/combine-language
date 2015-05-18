@@ -82,9 +82,9 @@ pub type Reserved<'a, 'b, I> = Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy
 pub struct Identifier<PS, P>
     where PS: Parser<Output=char>
         , P: Parser<Input=PS::Input, Output=char> {
-    start: PS,
-    rest: P,
-    reserved: Vec<Cow<'static, str>>
+    pub start: PS,
+    pub rest: P,
+    pub reserved: Vec<Cow<'static, str>>
 }
 
 pub struct LanguageDef<IS, I, OS, O>
