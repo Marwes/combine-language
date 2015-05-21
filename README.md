@@ -1,0 +1,2 @@
+# parser-combinators-language
+This a crate providing much of the same functionality as [Text.Parsec.Token](hackage.haskell.org/package/parsec-3.1.9/docs/Text-Parsec-Token.html) but it is written in rust using [parser-combinators](https://github.com/Marwes/parser-combinators). Currently this should be seen as very early days so the crate is very much undocumented (look at the tests for usage) and much of the API is likely to change both to be more performant and to be easier to use.
