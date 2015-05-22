@@ -66,7 +66,7 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
                     Ok((_, rest)) => input = rest,
                     Err(_) => match input.clone().combine(|input| try(string(comment_end)).parse_state(input)) {
                         Ok((_, input)) => return Ok(((), input)),
-                        Err(_) => match input.combine(|input| parser(any_char).parse_state(input)) {
+                        Err(_) => match input.combine(|input| any_char().parse_state(input)) {
                             Ok((_, rest)) => input = rest,
                             Err(err) => return Err(err)
                         }
@@ -81,6 +81,8 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
 }
 
 pub type Reserved<'a, 'b, I> = Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy<EnvParser<'a, 'b, I, char>>>>>;
+
+pub type BetweenChar<'a, 'b, I, P> = Between<Lex<'a, 'b, pc::Char<I>>, Lex<'a, 'b, pc::Char<I>>, P>;
 
 pub struct Identifier<PS, P>
     where PS: Parser<Output=char>
@@ -225,7 +227,7 @@ impl <'a, I> Env<'a, I>
     }
 
     fn char(input: State<I>) -> ParseResult<char, I> {
-        let (c, input) = try!(parser(any_char).parse_state(input));
+        let (c, input) = try!(any_char().parse_state(input));
         let mut back_slash_char = satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_state(input)),
@@ -244,7 +246,7 @@ impl <'a, I> Env<'a, I>
     }
 
     fn string_char(input: State<I>) -> ParseResult<char, I> {
-        let (c, input) = try!(parser(any_char).parse_state(input));
+        let (c, input) = try!(any_char().parse_state(input));
         let mut back_slash_char = satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_state(input)),
@@ -253,29 +255,28 @@ impl <'a, I> Env<'a, I>
         }
     }
 
-    pub fn angles<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+    pub fn angles<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
-        self.between("<", ">", parser)
+        self.between('<', '>', parser)
     }
-    pub fn braces<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+    pub fn braces<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
-        self.between("{", "}", parser)
+        self.between('{', '}', parser)
     }
     
-    pub fn brackets<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+    pub fn brackets<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
-        self.between("[", "]", parser)
+        self.between('[', ']', parser)
     }
 
-    pub fn parens<'b, P>(&'b self, parser: P) -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+    pub fn parens<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
-        self.between("(", ")", parser)
+        self.between('(', ')', parser)
     }
 
-    fn between<'b, P>(&'b self, start: &'static str, end: &'static str, parser: P)
-        -> Between<Lex<'a, 'b, pc::String<I>>, Lex<'a, 'b, pc::String<I>>, P>
+    fn between<'b, P>(&'b self, start: char, end: char, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
-        between(self.lex(string(start)), self.lex(string(end)), parser)
+        between(self.lex(char(start)), self.lex(char(end)), parser)
     }
 
     pub fn integer<'b>(&'b self) -> Lex<'a, 'b, FnParser<I, fn (State<I>) -> ParseResult<i64, I>>> {
