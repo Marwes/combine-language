@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use parser_combinators::*;
+use parser_combinators::primitives as prim;
 use parser_combinators::char as pc;
 use parser_combinators::combinator::{Between, FnParser, NotFollowedBy, Skip, Try, Token};
 use parser_combinators::primitives::{Consumed, Error, Stream, State};
@@ -352,6 +353,86 @@ fn escape_char(c: char) -> char {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
+pub enum Fixity {
+    Left,
+    Right,
+    None
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
+pub struct Assoc {
+    pub fixity: Fixity,
+    pub precedence: i32
+}
+
+#[derive(Clone, Debug)]
+pub struct Expression<O, P, F> {
+    expr: P,
+    op: O,
+    f: F
+}
+
+//Macro which breaks on empty consumed instead of returning
+macro_rules! tryb {
+    ($e: expr) => {
+        match $e {
+            Ok(x) => x,
+            Err(Consumed::Empty(_)) => break,
+            Err(err@Consumed::Consumed(_)) => return Err(err)
+        }
+    }
+}
+
+impl <O, P, F, T> Expression<O, P, F>
+    where O: Parser<Output=(T, Assoc)>
+        , P: Parser<Input=O::Input>
+        , F: Fn(P::Output, T, P::Output) -> P::Output {
+
+    fn parse_expr(&mut self, min_precedence: i32, mut l: P::Output, mut input: Consumed<State<P::Input>>)
+        -> prim::ParseResult<P::Output, P::Input, <P::Input as Stream>::Item> {
+
+        loop {
+            let ((op, fixity), rest) = tryb!(self.op.parse_state(input.clone().into_inner()));
+            if fixity.precedence < min_precedence {
+                return Ok((l, input))
+            }
+            let (mut r, rest) = try!(rest.combine(|rest| self.expr.parse_state(rest)));
+            input = rest;
+            loop {
+                let ((lookahead, fixity), _) = tryb!(self.op.parse_state(input.clone().into_inner()));
+                if fixity.precedence <= min_precedence {
+                    break
+                }
+                let (new_r, rest) = try!(self.parse_expr(fixity.precedence, r, input));
+                r = new_r;
+                input = rest;
+            }
+            l = (self.f)(l, op, r);
+        }
+        Ok((l, input))
+    }
+}
+
+impl <O, P, F, T> Parser for Expression<O, P, F> 
+    where O: Parser<Output=(T, Assoc)>
+        , P: Parser<Input=O::Input>
+        , F: Fn(P::Output, T, P::Output) -> P::Output {
+    type Input = P::Input;
+    type Output = P::Output;
+    fn parse_state(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input, <Self::Input as Stream>::Item> {
+        let (l, input) = try!(self.expr.parse_state(input));
+        self.parse_expr(0, l, input)
+    }
+}
+
+pub fn expression_parser<O, P, F, T>(expr: P, op: O, f: F) -> Expression<O, P, F>
+    where O: Parser<Output=(T, Assoc)>
+        , P: Parser<Input=O::Input>
+        , F: Fn(P::Output, T, P::Output) -> P::Output {
+    Expression { expr: expr, op: op, f: f }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +503,54 @@ mod tests {
         assert!(e.ident().parse("+").is_err());
         assert_eq!(e.reserved_op("-").parse("-       "), Ok(("-", "")));
         assert!(e.reserved_op("-").parse("--       ").is_err());
+    }
+
+    use self::Expr::*;
+    #[derive(PartialEq, Debug)]
+    enum Expr {
+        Int(i64),
+        Op(Box<Expr>, &'static str, Box<Expr>)
+    }
+
+    fn op(l: Expr, op: &'static str, r: Expr) -> Expr {
+        Expr::Op(Box::new(l), op, Box::new(r))
+    }
+
+
+    fn test_expr1() -> (&'static str, Expr) {
+        let mul_2_3 = op(Int(2), "*", Int(3));
+        let div_4_5 = op(Int(4), "/", Int(5));
+        ("1 + 2 * 3 - 4 / 5", op(op(Int(1), "+", mul_2_3), "-", div_4_5))
+    }
+    fn test_expr2() -> (&'static str, Expr) {
+        let mul_2_3_4 = op(op(Int(2), "*", Int(3)), "/", Int(4));
+        let add_1_mul = op(Int(1), "+", mul_2_3_4);
+        ("1 + 2 * 3 / 4 - 5 + 6", op(op(add_1_mul, "-", Int(5)), "+", Int(6)))
+    }
+
+    #[test]
+    fn expression() {
+        let e = env();
+        let mut ops = ["*", "/", "+", "-"]
+            .iter()
+            .cloned()
+            .map(string)
+            .collect::<Vec<_>>();
+        let op_parser = e.lex(choice(&mut ops[..])
+            .map(|s| {
+                let prec = match s {
+                    "+" | "-" => 0,
+                    "*" | "/" => 1,
+                    _ => panic!("Impossible")
+                };
+                (s, Assoc { fixity: Fixity::Left, precedence: prec })
+            }));
+        let mut expr = expression_parser(e.integer().map(Expr::Int), op_parser, op);
+        let (s1, e1) = test_expr1();
+        let result = expr.parse(s1);
+        assert_eq!(result, Ok((e1, "")));
+        let (s2, e2) = test_expr2();
+        let result = expr.parse(s2);
+        assert_eq!(result, Ok((e2, "")));
     }
 }
