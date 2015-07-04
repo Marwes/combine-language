@@ -393,18 +393,20 @@ impl <O, P, F, T> Expression<O, P, F>
         -> prim::ParseResult<P::Output, P::Input, <P::Input as Stream>::Item> {
 
         loop {
-            let ((op, fixity), rest) = tryb!(self.op.parse_state(input.clone().into_inner()));
-            if fixity.precedence < min_precedence {
+            let ((op, op_assoc), rest) = tryb!(self.op.parse_state(input.clone().into_inner()));
+            if op_assoc.precedence < min_precedence {
                 return Ok((l, input))
             }
             let (mut r, rest) = try!(rest.combine(|rest| self.expr.parse_state(rest)));
             input = rest;
             loop {
-                let ((lookahead, fixity), _) = tryb!(self.op.parse_state(input.clone().into_inner()));
-                if fixity.precedence <= min_precedence {
+                let ((lookahead, assoc), _) = tryb!(self.op.parse_state(input.clone().into_inner()));
+                let proceed = assoc.precedence > op_assoc.precedence
+                    || assoc.fixity == Fixity::Right && assoc.precedence == op_assoc.precedence;
+                if !proceed {
                     break
                 }
-                let (new_r, rest) = try!(self.parse_expr(fixity.precedence, r, input));
+                let (new_r, rest) = try!(self.parse_expr(assoc.precedence, r, input));
                 r = new_r;
                 input = rest;
             }
@@ -437,6 +439,7 @@ pub fn expression_parser<O, P, F, T>(expr: P, op: O, f: F) -> Expression<O, P, F
 mod tests {
     use super::*;
     use parser_combinators::*;
+    use parser_combinators::primitives::State;
     
     fn env() -> Env<'static, &'static str> {
         Env::new(LanguageDef { 
@@ -528,29 +531,57 @@ mod tests {
         ("1 + 2 * 3 / 4 - 5 + 6", op(op(add_1_mul, "-", Int(5)), "+", Int(6)))
     }
 
-    #[test]
-    fn expression() {
-        let e = env();
-        let mut ops = ["*", "/", "+", "-"]
+
+    fn op_parser(input: State<&'static str>) -> ParseResult<(&'static str, Assoc), &'static str> {
+        let mut ops = ["*", "/", "+", "-", "^", "&&", "||", "!!"]
             .iter()
             .cloned()
             .map(string)
             .collect::<Vec<_>>();
-        let op_parser = e.lex(choice(&mut ops[..])
+        choice(&mut ops[..])
             .map(|s| {
                 let prec = match s {
-                    "+" | "-" => 0,
-                    "*" | "/" => 1,
+                    "||" => 2,
+                    "&&" => 3,
+                    "+" | "-" => 6,
+                    "*" | "/" => 7,
+                    "^" => 8,
+                    "!!" => 9,
                     _ => panic!("Impossible")
                 };
-                (s, Assoc { fixity: Fixity::Left, precedence: prec })
-            }));
-        let mut expr = expression_parser(e.integer().map(Expr::Int), op_parser, op);
+                let fixity = match s {
+                    "+" | "-" |"*" | "/" => Fixity::Left,
+                    "^" | "&&" | "||"  => Fixity::Right,
+                    _ => panic!("Impossible")
+                };
+                (s, Assoc { fixity: fixity, precedence: prec })
+            })
+            .parse_state(input)
+    }
+
+    #[test]
+    fn expression() {
+        let e = env();
+        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
         let (s1, e1) = test_expr1();
         let result = expr.parse(s1);
         assert_eq!(result, Ok((e1, "")));
         let (s2, e2) = test_expr2();
         let result = expr.parse(s2);
         assert_eq!(result, Ok((e2, "")));
+    }
+    #[test]
+    fn right_assoc_expression() {
+        let e = env();
+        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
+        let result = expr.parse("1 + 2 * 3 ^ 4 / 5");
+        let power_3_4 = op(Int(3), "^", Int(4));
+        let mul_2_3_5 = op(op(Int(2), "*", power_3_4), "/", Int(5));
+        let add_1_mul = op(Int(1), "+", mul_2_3_5);
+        assert_eq!(result, Ok((add_1_mul, "")));
+        let result = expr.parse("1 ^ 2 && 3 ^ 4");
+        let e_1_2 = op(Int(1), "^", Int(2));
+        let e_3_4 = op(Int(3), "^", Int(4));
+        assert_eq!(result, Ok((op(e_1_2, "&&", e_3_4), "")));
     }
 }
