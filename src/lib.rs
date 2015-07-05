@@ -249,10 +249,14 @@ impl <'a, I> LanguageEnv<'a, I>
 
     fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
         let mut ident = self.ident.borrow_mut();
-        let mut ident = &mut *ident;
-        let mut ident_parser = self.lex((&mut *ident.0).and(many(&mut *ident.1)))
-            .map(|(c, mut s): (char, String)| { s.insert(0, c); s });
-        let (s, input) = try!(ident_parser.parse_state(input));
+        let (first, input) = try!(ident.0.parse_state(input));
+        let mut buffer = String::new();
+        buffer.push(first);
+        let mut iter = (&mut *ident.1).iter(input.into_inner());
+        buffer.extend(iter.by_ref());
+        //We definitely consumed the char `first` so make sure that the input is consumed
+        let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
+        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
         match self.reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| ParseError::new(input.position, Error::Expected("identifier".into()))))
@@ -281,10 +285,14 @@ impl <'a, I> LanguageEnv<'a, I>
 
     fn parse_op(&self, input: State<I>) -> ParseResult<String, I> {
         let mut op = self.op.borrow_mut();
-        let mut op = &mut *op;
-        let mut op_parser = self.lex((&mut *op.0).and(many(&mut *op.1)))
-            .map(|(c, mut s): (char, String)| { s.insert(0, c); s });
-        let (s, input) = try!(op_parser.parse_state(input));
+        let (first, input) = try!(op.0.parse_state(input));
+        let mut buffer = String::new();
+        buffer.push(first);
+        let mut iter = (&mut *op.1).iter(input.into_inner());
+        buffer.extend(iter.by_ref());
+        //We definitely consumed the char `first` so make sure that the input is consumed
+        let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
+        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
         match self.op_reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| ParseError::new(input.position, Error::Expected("operator".into()))))
