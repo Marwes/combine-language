@@ -180,13 +180,13 @@ pub struct LanguageDef<IS, I, OS, O>
     pub comment_end: &'static str
 }
 
+type IdentParser<'a, I> = (Box<Parser<Input=I, Output=char> + 'a>, Box<Parser<Input=I, Output=char> + 'a>);
+
 ///A type containing parsers for a specific language.
 pub struct LanguageEnv<'a, I> {
-    ident_start: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
-    ident: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
+    ident: RefCell<IdentParser<'a, I>>,
     reserved: Vec<Cow<'static, str>>,
-    op_start: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
-    op: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
+    op: RefCell<IdentParser<'a, I>>,
     op_reserved: Vec<Cow<'static, str>>,
     comment_line: &'static str,
     comment_start: &'static str,
@@ -211,11 +211,9 @@ impl <'a, I> LanguageEnv<'a, I>
             comment_end
         } = def;
         LanguageEnv {
-            ident_start: RefCell::new(Box::new(ident_start)),
-            ident: RefCell::new(Box::new(ident_rest)),
+            ident: RefCell::new((Box::new(ident_start), Box::new(ident_rest))),
             reserved: ident_reserved,
-            op_start: RefCell::new(Box::new(op_start)),
-            op: RefCell::new(Box::new(op_rest)),
+            op: RefCell::new((Box::new(op_start), Box::new(op_rest))),
             op_reserved: op_reserved,
             comment_line: comment_line,
             comment_start: comment_start,
@@ -250,9 +248,9 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
-        let mut start = self.ident_start.borrow_mut();
-        let mut rest = self.ident.borrow_mut();
-        let mut ident_parser = self.lex((&mut *start).and(many(&mut *rest)))
+        let mut ident = self.ident.borrow_mut();
+        let mut ident = &mut *ident;
+        let mut ident_parser = self.lex((&mut *ident.0).and(many(&mut *ident.1)))
             .map(|(c, mut s): (char, String)| { s.insert(0, c); s });
         let (s, input) = try!(ident_parser.parse_state(input));
         match self.reserved.iter().find(|r| **r == s) {
@@ -272,7 +270,7 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     fn ident_letter(&self, input: State<I>) -> ParseResult<char, I> {
-        self.ident.borrow_mut()
+        self.ident.borrow_mut().1
             .parse_state(input)
     }
 
@@ -282,9 +280,9 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     fn parse_op(&self, input: State<I>) -> ParseResult<String, I> {
-        let mut start = self.op_start.borrow_mut();
-        let mut rest = self.op.borrow_mut();
-        let mut op_parser = self.lex((&mut *start).and(many(&mut *rest)))
+        let mut op = self.op.borrow_mut();
+        let mut op = &mut *op;
+        let mut op_parser = self.lex((&mut *op.0).and(many(&mut *op.1)))
             .map(|(c, mut s): (char, String)| { s.insert(0, c); s });
         let (s, input) = try!(op_parser.parse_state(input));
         match self.op_reserved.iter().find(|r| **r == s) {
@@ -302,7 +300,7 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     fn op_letter(&self, input: State<I>) -> ParseResult<char, I> {
-        self.op.borrow_mut()
+        self.op.borrow_mut().1
             .parse_state(input)
     }
 
