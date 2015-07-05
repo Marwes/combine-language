@@ -9,14 +9,14 @@ use parser_combinators::char as pc;
 use parser_combinators::combinator::{Between, FnParser, NotFollowedBy, Skip, Try, Token};
 use parser_combinators::primitives::{Consumed, Error, Stream, State};
 
-
-pub struct EnvParser<'a: 'b, 'b, I: 'b, T>
+///A language parser
+pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
     where I: Stream<Item=char> {
-    env: &'b Env<'a, I>,
-    parser: fn (&Env<'a, I>, State<I>) -> ParseResult<T, I>
+    env: &'b LanguageEnv<'a, I>,
+    parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>
 }
 
-impl <'a, 'b, I, O> Parser for EnvParser<'a, 'b, I, O>
+impl <'a, 'b, I, O> Parser for LanguageParser<'a, 'b, I, O>
     where I: Stream<Item=char> {
     type Output = O;
     type Input = I;
@@ -25,6 +25,7 @@ impl <'a, 'b, I, O> Parser for EnvParser<'a, 'b, I, O>
     }
 }
 
+///A lexing parser for a language
 #[derive(Clone)]
 pub struct Lex<'a: 'b, 'b, P>
     where P: Parser
@@ -42,10 +43,11 @@ impl <'a, 'b, P> Parser for Lex<'a, 'b, P>
     }
 }
 
+///A whitespace parser for a language
 #[derive(Clone)]
 pub struct WhiteSpace<'a: 'b, 'b, I>
     where I: Stream<Item=char> + 'b {
-    env: &'b Env<'a, I>
+    env: &'b LanguageEnv<'a, I>
 }
 
 impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
@@ -82,31 +84,42 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     }
 }
 
-pub type Reserved<'a, 'b, I> = Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy<EnvParser<'a, 'b, I, char>>>>>;
+pub type Reserved<'a, 'b, I> = Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy<LanguageParser<'a, 'b, I, char>>>>>;
 
 pub type BetweenChar<'a, 'b, I, P> = Between<Lex<'a, 'b, Token<I>>, Lex<'a, 'b, Token<I>>, P>;
 
+/// Defines how to define an identifier (or operator)
 pub struct Identifier<PS, P>
     where PS: Parser<Output=char>
         , P: Parser<Input=PS::Input, Output=char> {
+    ///Parses a valid starting character for an identifier
     pub start: PS,
+    ///Parses the rest of the characthers in a valid identifier
     pub rest: P,
+    ///A number of reserved words which cannot be identifiers
     pub reserved: Vec<Cow<'static, str>>
 }
 
+/// A struct type which contains the necessary definitions to construct a language parser
 pub struct LanguageDef<IS, I, OS, O>
     where I: Parser<Output=char>
         , IS: Parser<Input=I::Input, Output=char>
         , O: Parser<Input=I::Input, Output=char>
         , OS: Parser<Input=I::Input, Output=char> {
+    ///How to parse an identifier
     pub ident: Identifier<IS, I>,
+    ///How to parse an operator
     pub op: Identifier<OS, O>,
+    ///Describes the start of a line comment
     pub comment_line: &'static str,
+    ///Describes the start of a block comment
     pub comment_start: &'static str,
+    ///Describes the end of a block comment
     pub comment_end: &'static str
 }
 
-pub struct Env<'a, I> {
+///A type containing parsers for a specific language.
+pub struct LanguageEnv<'a, I> {
     ident_start: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
     ident: RefCell<Box<Parser<Input=I, Output=char> + 'a>>,
     reserved: Vec<Cow<'static, str>>,
@@ -119,10 +132,11 @@ pub struct Env<'a, I> {
     _marker: PhantomData<fn (I) -> I>
 }
 
-impl <'a, I> Env<'a, I>
+impl <'a, I> LanguageEnv<'a, I>
     where I: Stream<Item=char> {
 
-    pub fn new<A, B, C, D>(def: LanguageDef<A, B, C, D>) -> Env<'a, I>
+    ///Constructs a new parser from a language defintion
+    pub fn new<A, B, C, D>(def: LanguageDef<A, B, C, D>) -> LanguageEnv<'a, I>
         where A: Parser<Input=I, Output=char> + 'a
             , B: Parser<Input=I, Output=char> + 'a
             , C: Parser<Input=I, Output=char> + 'a
@@ -134,7 +148,7 @@ impl <'a, I> Env<'a, I>
             comment_start,
             comment_end
         } = def;
-        Env {
+        LanguageEnv {
             ident_start: RefCell::new(Box::new(ident_start)),
             ident: RefCell::new(Box::new(ident_rest)),
             reserved: ident_reserved,
@@ -148,24 +162,29 @@ impl <'a, I> Env<'a, I>
         }
     }
 
-    fn parser<'b, T>(&'b self, parser: fn (&Env<'a, I>, State<I>) -> ParseResult<T, I>) -> EnvParser<'a, 'b, I, T> {
-        EnvParser { env: self, parser: parser }
+    fn parser<'b, T>(&'b self, parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>) -> LanguageParser<'a, 'b, I, T> {
+        LanguageParser { env: self, parser: parser }
     }
 
+    ///Creates a lexing parser from `p`
     pub fn lex<'b, P>(&'b self, p: P) -> Lex<'a, 'b, P>
         where P: Parser<Input=I> + 'b {
         Lex { parser: p.skip(self.white_space()) }
     }
+
+    ///Skips spaces and comments
     pub fn white_space<'b>(&'b self) -> WhiteSpace<'a, 'b, I> {
         WhiteSpace { env: self }
     }
 
+    ///Parses a symbol, lexing the stream if it is successful
     pub fn symbol<'b>(&'b self, name: &'static str) -> Lex<'a, 'b, pc::String<I>> {
         self.lex(string(name))
     }
 
-    pub fn ident<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
-        self.parser(Env::<I>::parse_ident)
+    ///Parses an identifier, failing if it parses something that is a reserved identifier
+    pub fn identifier<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
+        self.parser(LanguageEnv::<I>::parse_ident)
     }
 
     fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
@@ -182,8 +201,9 @@ impl <'a, I> Env<'a, I>
         }
     }
 
+    ///Parses the reserved identifier `name`
     pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
-        self.lex(try(string(name).skip(not_followed_by(self.parser(Env::<I>::ident_letter)))))
+        self.lex(try(string(name).skip(not_followed_by(self.parser(LanguageEnv::<I>::ident_letter)))))
     }
 
     fn ident_letter(&self, input: State<I>) -> ParseResult<char, I> {
@@ -191,8 +211,9 @@ impl <'a, I> Env<'a, I>
             .parse_state(input)
     }
 
-    pub fn op<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
-        self.parser(Env::<I>::parse_op)
+    ///Parses an operator, failing if it parses something that is a reserved operator
+    pub fn op<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
+        self.parser(LanguageEnv::<I>::parse_op)
     }
 
     fn parse_op(&self, input: State<I>) -> ParseResult<String, I> {
@@ -209,8 +230,9 @@ impl <'a, I> Env<'a, I>
         }
     }
 
+    ///Parses the reserved operator `name`
     pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
-        self.lex(try(string(name).skip(not_followed_by(self.parser(Env::<I>::op_letter)))))
+        self.lex(try(string(name).skip(not_followed_by(self.parser(LanguageEnv::<I>::op_letter)))))
     }
 
     fn op_letter(&self, input: State<I>) -> ParseResult<char, I> {
@@ -218,12 +240,13 @@ impl <'a, I> Env<'a, I>
             .parse_state(input)
     }
 
-    pub fn char_literal<'b>(&'b self) -> EnvParser<'a, 'b, I, char> {
-        self.parser(Env::<I>::char_literal_parser)
+    ///Parses a character literal taking escape sequences into account
+    pub fn char_literal<'b>(&'b self) -> LanguageParser<'a, 'b, I, char> {
+        self.parser(LanguageEnv::<I>::char_literal_parser)
     }
 
     fn char_literal_parser(&self, input: State<I>) -> ParseResult<char, I> {
-        self.lex(between(string("\'"), string("\'"), parser(Env::<I>::char)))
+        self.lex(between(string("\'"), string("\'"), parser(LanguageEnv::<I>::char)))
             .expected("character")
             .parse_state(input)
     }
@@ -238,12 +261,13 @@ impl <'a, I> Env<'a, I>
         }
     }
 
-    pub fn string_literal<'b>(&'b self) -> EnvParser<'a, 'b, I, String> {
-        self.parser(Env::<I>::string_literal_parser)
+    ///Parses a string literal taking character escapes into account
+    pub fn string_literal<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
+        self.parser(LanguageEnv::<I>::string_literal_parser)
     }
 
     fn string_literal_parser(&self, input: State<I>) -> ParseResult<String, I> {
-        self.lex(between(string("\""), string("\""), many(parser(Env::<I>::string_char))))
+        self.lex(between(string("\""), string("\""), many(parser(LanguageEnv::<I>::string_char))))
             .parse_state(input)
     }
 
@@ -257,20 +281,29 @@ impl <'a, I> Env<'a, I>
         }
     }
 
+    ///Parses `p` inside angle brackets
+    ///`< p >`
     pub fn angles<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
         self.between('<', '>', parser)
     }
+
+    ///Parses `p` inside braces
+    ///`{ p }`
     pub fn braces<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
         self.between('{', '}', parser)
     }
     
+    ///Parses `p` inside brackets
+    ///`[ p ]`
     pub fn brackets<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
         self.between('[', ']', parser)
     }
 
+    ///Parses `p` inside parentheses
+    ///`( p )`
     pub fn parens<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
         where P: Parser<Input=I> {
         self.between('(', ')', parser)
@@ -281,8 +314,9 @@ impl <'a, I> Env<'a, I>
         between(self.lex(char(start)), self.lex(char(end)), parser)
     }
 
+    ///Parses an integer
     pub fn integer<'b>(&'b self) -> Lex<'a, 'b, FnParser<I, fn (State<I>) -> ParseResult<i64, I>>> {
-        self.lex(parser(Env::integer_parser))
+        self.lex(parser(LanguageEnv::integer_parser))
     }
     fn integer_parser(input: State<I>) -> ParseResult<i64, I> {
         let (s, input) = try!(many1::<String, _>(digit())
@@ -295,12 +329,13 @@ impl <'a, I> Env<'a, I>
         Ok((n, input))
     }
 
+    ///Parses a floating point number
     pub fn float<'b>(&'b self) -> Lex<'a, 'b, FnParser<I, fn (State<I>) -> ParseResult<f64, I>>> {
-        self.lex(parser(Env::float_parser))
+        self.lex(parser(LanguageEnv::float_parser))
     }
 
     fn float_parser(input: State<I>) -> ParseResult<f64, I> {
-        let i = parser(Env::<I>::integer_parser).map(|x| x as f64);
+        let i = parser(LanguageEnv::<I>::integer_parser).map(|x| x as f64);
         let fractional = many(digit())
             .map(|digits: String| {
                 let mut magnitude = 1.0;
@@ -320,7 +355,7 @@ impl <'a, I> Env<'a, I>
             .then(|(x, y)| parser(move |input| {
                 let n = if x > 0.0 { x + y } else { x - y };
                 let exp = satisfy(|c| c == 'e' || c == 'E')
-                    .with(optional(string("-")).and(parser(Env::<I>::integer_parser)));
+                    .with(optional(string("-")).and(parser(LanguageEnv::<I>::integer_parser)));
                     optional(exp)
                     .map(|exp_option| {
                         match exp_option {
@@ -353,22 +388,27 @@ fn escape_char(c: char) -> char {
     }
 }
 
+///Enumeration on fixities for the expression parser
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub enum Fixity {
     Left,
-    Right,
-    None
+    Right
 }
 
+///Struct for encompassing the associativity of an operator
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct Assoc {
+    ///Operator fixity
     pub fixity: Fixity,
+    ///Operator precedence
     pub precedence: i32
 }
 
+
+///Expression parser which handles binary operators
 #[derive(Clone, Debug)]
 pub struct Expression<O, P, F> {
-    expr: P,
+    term: P,
     op: O,
     f: F
 }
@@ -397,7 +437,7 @@ impl <O, P, F, T> Expression<O, P, F>
             if op_assoc.precedence < min_precedence {
                 return Ok((l, input))
             }
-            let (mut r, rest) = try!(rest.combine(|rest| self.expr.parse_state(rest)));
+            let (mut r, rest) = try!(rest.combine(|rest| self.term.parse_state(rest)));
             input = rest;
             loop {
                 let ((lookahead, assoc), _) = tryb!(self.op.parse_state(input.clone().into_inner()));
@@ -423,16 +463,55 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
     type Input = P::Input;
     type Output = P::Output;
     fn parse_state(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input, <Self::Input as Stream>::Item> {
-        let (l, input) = try!(self.expr.parse_state(input));
+        let (l, input) = try!(self.term.parse_state(input));
         self.parse_expr(0, l, input)
     }
 }
 
-pub fn expression_parser<O, P, F, T>(expr: P, op: O, f: F) -> Expression<O, P, F>
+///Constructs an expression parser out of a term parser an operator parser and a function which
+///combines a binary expression to a new expression
+///
+/// ```
+/// # extern crate parser_combinators as pc;
+/// # extern crate parser_combinators_language as pcl;
+/// # use pc::*;
+/// # use pcl::*;
+/// use self::Expr::*;
+/// #[derive(PartialEq, Debug)]
+/// enum Expr {
+///      Id(String),
+///      Op(Box<Expr>, &'static str, Box<Expr>)
+/// }
+/// fn op(l: Expr, o: &'static str, r: Expr) -> Expr {
+///     Op(Box::new(l), o, Box::new(r))
+/// }
+/// fn id(s: &str) -> Expr {
+///     Id(String::from(s))
+/// }
+/// # fn main() {
+/// let op_parser = string("+").or(string("*"))
+///     .map(|op| {
+///         let prec = match op {
+///             "+" => 6,
+///             "*" => 7,
+///             _ => unreachable!()
+///         };
+///         (op, Assoc { precedence: prec, fixity: Fixity::Left })
+///     })
+///     .skip(spaces());
+/// let term = many(letter())
+///     .map(Id)
+///     .skip(spaces());
+/// let mut parser = expression_parser(term, op_parser, op);
+/// let result = parser.parse("a + b * c + d");
+/// assert_eq!(result, Ok((op(op(id("a"), "+", op(id("b"), "*", id("c"))), "+", id("d")), "")));
+/// # }
+/// ```
+pub fn expression_parser<O, P, F, T>(term: P, op: O, f: F) -> Expression<O, P, F>
     where O: Parser<Output=(T, Assoc)>
         , P: Parser<Input=O::Input>
         , F: Fn(P::Output, T, P::Output) -> P::Output {
-    Expression { expr: expr, op: op, f: f }
+    Expression { term: term, op: op, f: f }
 }
 
 #[cfg(test)]
@@ -441,8 +520,8 @@ mod tests {
     use parser_combinators::*;
     use parser_combinators::primitives::State;
     
-    fn env() -> Env<'static, &'static str> {
-        Env::new(LanguageDef { 
+    fn env() -> LanguageEnv<'static, &'static str> {
+        LanguageEnv::new(LanguageDef { 
             ident: Identifier {
                 start: letter(),
                 rest: alpha_num(),
@@ -488,11 +567,11 @@ mod tests {
     #[test]
     fn identifier() {
         let e = env();
-        let result = e.ident()
+        let result = e.identifier()
             .parse("a12bc");
         assert_eq!(result, Ok(("a12bc".to_string(), "")));
-        assert!(e.ident().parse("1bcv").is_err());
-        assert!(e.ident().parse("if").is_err());
+        assert!(e.identifier().parse("1bcv").is_err());
+        assert!(e.identifier().parse("if").is_err());
         assert_eq!(e.reserved("if").parse("if"), Ok(("if", "")));
         assert!(e.reserved("if").parse("ifx").is_err());
     }
@@ -503,7 +582,7 @@ mod tests {
         let result = e.op()
             .parse("++  ");
         assert_eq!(result, Ok(("++".to_string(), "")));
-        assert!(e.ident().parse("+").is_err());
+        assert!(e.identifier().parse("+").is_err());
         assert_eq!(e.reserved_op("-").parse("-       "), Ok(("-", "")));
         assert!(e.reserved_op("-").parse("--       ").is_err());
     }
