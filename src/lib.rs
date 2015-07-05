@@ -117,9 +117,38 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     }
 }
 
-pub type Reserved<'a, 'b, I> = Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy<LanguageParser<'a, 'b, I, char>>>>>;
 
-pub type BetweenChar<'a, 'b, I, P> = Between<Lex<'a, 'b, Token<I>>, Lex<'a, 'b, Token<I>>, P>;
+///Parses a reserved word
+pub struct Reserved<'a: 'b, 'b, I>
+    where I: Stream<Item=char> + 'b {
+    parser: Lex<'a, 'b, Try<Skip<pc::String<I>, NotFollowedBy<LanguageParser<'a, 'b, I, char>>>>>
+}
+
+impl <'a, 'b, I> Parser for Reserved<'a, 'b, I>
+    where I: Stream<Item=char> + 'b {
+    type Output = &'static str;
+    type Input = I;
+    fn parse_state(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
+        self.parser.parse_state(input)
+    }
+}
+
+///Parses `P` between two delimiter characters
+pub struct BetweenChar<'a: 'b, 'b, P>
+    where P: Parser
+        , P::Input: Stream<Item=char> + 'b {
+    parser: Between<Lex<'a, 'b, Token<P::Input>>, Lex<'a, 'b, Token<P::Input>>, P>
+}
+
+impl <'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
+    where I: Stream<Item=char> + 'b
+        , P: Parser<Input=I> {
+    type Output = P::Output;
+    type Input = I;
+    fn parse_state(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
+        self.parser.parse_state(input)
+    }
+}
 
 /// Defines how to define an identifier (or operator)
 pub struct Identifier<PS, P>
@@ -236,7 +265,10 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses the reserved identifier `name`
     pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
-        self.lex(try(string(name).skip(not_followed_by(self.parser(LanguageEnv::<I>::ident_letter)))))
+        let ident_letter = self.parser(LanguageEnv::<I>::ident_letter);
+        Reserved {
+            parser: self.lex(try(string(name).skip(not_followed_by(ident_letter))))
+        }
     }
 
     fn ident_letter(&self, input: State<I>) -> ParseResult<char, I> {
@@ -265,7 +297,8 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses the reserved operator `name`
     pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
-        self.lex(try(string(name).skip(not_followed_by(self.parser(LanguageEnv::<I>::op_letter)))))
+        let op_letter = self.parser(LanguageEnv::<I>::op_letter);
+        Reserved { parser: self.lex(try(string(name).skip(not_followed_by(op_letter)))) }
     }
 
     fn op_letter(&self, input: State<I>) -> ParseResult<char, I> {
@@ -316,35 +349,35 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses `p` inside angle brackets
     ///`< p >`
-    pub fn angles<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
+    pub fn angles<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
         where P: Parser<Input=I> {
         self.between('<', '>', parser)
     }
 
     ///Parses `p` inside braces
     ///`{ p }`
-    pub fn braces<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
+    pub fn braces<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
         where P: Parser<Input=I> {
         self.between('{', '}', parser)
     }
     
     ///Parses `p` inside brackets
     ///`[ p ]`
-    pub fn brackets<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
+    pub fn brackets<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
         where P: Parser<Input=I> {
         self.between('[', ']', parser)
     }
 
     ///Parses `p` inside parentheses
     ///`( p )`
-    pub fn parens<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, I, P>
+    pub fn parens<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
         where P: Parser<Input=I> {
         self.between('(', ')', parser)
     }
 
-    fn between<'b, P>(&'b self, start: char, end: char, parser: P) -> BetweenChar<'a, 'b, I, P>
+    fn between<'b, P>(&'b self, start: char, end: char, parser: P) -> BetweenChar<'a, 'b, P>
         where P: Parser<Input=I> {
-        between(self.lex(char(start)), self.lex(char(end)), parser)
+        BetweenChar { parser: between(self.lex(char(start)), self.lex(char(end)), parser) }
     }
 
     ///Parses an integer
@@ -501,8 +534,8 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
     }
 }
 
-///Constructs an expression parser out of a term parser an operator parser and a function which
-///combines a binary expression to a new expression
+///Constructs an expression parser out of a term parser, an operator parser and a function which
+///combines a binary expression to new expressions.
 ///
 /// ```
 /// # extern crate parser_combinators as pc;
