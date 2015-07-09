@@ -39,22 +39,26 @@ use std::borrow::Cow;
 use parser_combinators::*;
 use parser_combinators::primitives as prim;
 use parser_combinators::char as pc;
-use parser_combinators::combinator::{Between, FnParser, NotFollowedBy, Skip, Try, Token};
+use parser_combinators::combinator::{Between, NotFollowedBy, Skip, Try, Token};
 use parser_combinators::primitives::{Consumed, Error, Stream, State};
 
 ///A language parser
 pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
     where I: Stream<Item=char> {
     env: &'b LanguageEnv<'a, I>,
-    parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>
+    parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>,
+    expected: &'static str
 }
 
 impl <'a, 'b, I, O> Parser for LanguageParser<'a, 'b, I, O>
     where I: Stream<Item=char> {
     type Output = O;
     type Input = I;
-    fn parse_state(&mut self, input: State<I>) -> ParseResult<O, I> {
+    fn parse_lazy(&mut self, input: State<I>) -> ParseResult<O, I> {
         (self.parser)(self.env, input)
+    }
+    fn add_error(&mut self, errors: &mut ParseError<I::Item>) {
+        errors.errors.push(Error::Expected(self.expected.into()));
     }
 }
 
@@ -73,6 +77,12 @@ impl <'a, 'b, P> Parser for Lex<'a, 'b, P>
     type Input = P::Input;
     fn parse_state(&mut self, input: State<P::Input>) -> ParseResult<P::Output, P::Input> {
         self.parser.parse_state(input)
+    }
+    fn parse_lazy(&mut self, input: State<P::Input>) -> ParseResult<P::Output, P::Input> {
+        self.parser.parse_lazy(input)
+    }
+    fn add_error(&mut self, errors: &mut ParseError<<P::Input as Stream>::Item>) {
+        self.parser.add_error(errors);
     }
 }
 
@@ -131,6 +141,12 @@ impl <'a, 'b, I> Parser for Reserved<'a, 'b, I>
     fn parse_state(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
         self.parser.parse_state(input)
     }
+    fn parse_lazy(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
+        self.parser.parse_lazy(input)
+    }
+    fn add_error(&mut self, errors: &mut ParseError<I::Item>) {
+        self.parser.add_error(errors);
+    }
 }
 
 ///Parses `P` between two delimiter characters
@@ -147,6 +163,13 @@ impl <'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
     type Input = I;
     fn parse_state(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
         self.parser.parse_state(input)
+    }
+
+    fn parse_lazy(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
+        self.parser.parse_lazy(input)
+    }
+    fn add_error(&mut self, errors: &mut ParseError<I::Item>) {
+        self.parser.add_error(errors);
     }
 }
 
@@ -222,8 +245,11 @@ impl <'a, I> LanguageEnv<'a, I>
         }
     }
 
-    fn parser<'b, T>(&'b self, parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>) -> LanguageParser<'a, 'b, I, T> {
-        LanguageParser { env: self, parser: parser }
+    fn parser<'b, T>(&'b self,
+                     parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>,
+                     expected: &'static str
+                    ) -> LanguageParser<'a, 'b, I, T> {
+        LanguageParser { env: self, parser: parser, expected: expected }
     }
 
     ///Creates a lexing parser from `p`
@@ -244,12 +270,12 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses an identifier, failing if it parses something that is a reserved identifier
     pub fn identifier<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
-        self.parser(LanguageEnv::<I>::parse_ident)
+        self.parser(LanguageEnv::<I>::parse_ident, "identifier")
     }
 
     fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
         let mut ident = self.ident.borrow_mut();
-        let (first, input) = try!(ident.0.parse_state(input));
+        let (first, input) = try!(ident.0.parse_lazy(input));
         let mut buffer = String::new();
         buffer.push(first);
         let mut iter = (&mut *ident.1).iter(input.into_inner());
@@ -267,7 +293,7 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses the reserved identifier `name`
     pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
-        let ident_letter = self.parser(LanguageEnv::<I>::ident_letter);
+        let ident_letter = self.parser(LanguageEnv::<I>::ident_letter, "identifier letter");
         Reserved {
             parser: self.lex(try(string(name).skip(not_followed_by(ident_letter))))
         }
@@ -275,17 +301,17 @@ impl <'a, I> LanguageEnv<'a, I>
 
     fn ident_letter(&self, input: State<I>) -> ParseResult<char, I> {
         self.ident.borrow_mut().1
-            .parse_state(input)
+            .parse_lazy(input)
     }
 
     ///Parses an operator, failing if it parses something that is a reserved operator
     pub fn op<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
-        self.parser(LanguageEnv::<I>::parse_op)
+        self.parser(LanguageEnv::<I>::parse_op, "operator")
     }
 
     fn parse_op(&self, input: State<I>) -> ParseResult<String, I> {
         let mut op = self.op.borrow_mut();
-        let (first, input) = try!(op.0.parse_state(input));
+        let (first, input) = try!(op.0.parse_lazy(input));
         let mut buffer = String::new();
         buffer.push(first);
         let mut iter = (&mut *op.1).iter(input.into_inner());
@@ -303,28 +329,28 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses the reserved operator `name`
     pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
-        let op_letter = self.parser(LanguageEnv::<I>::op_letter);
+        let op_letter = self.parser(LanguageEnv::<I>::op_letter, "operator letter");
         Reserved { parser: self.lex(try(string(name).skip(not_followed_by(op_letter)))) }
     }
 
     fn op_letter(&self, input: State<I>) -> ParseResult<char, I> {
         self.op.borrow_mut().1
-            .parse_state(input)
+            .parse_lazy(input)
     }
 
     ///Parses a character literal taking escape sequences into account
     pub fn char_literal<'b>(&'b self) -> LanguageParser<'a, 'b, I, char> {
-        self.parser(LanguageEnv::<I>::char_literal_parser)
+        self.parser(LanguageEnv::<I>::char_literal_parser, "character")
     }
 
     fn char_literal_parser(&self, input: State<I>) -> ParseResult<char, I> {
         self.lex(between(string("\'"), string("\'"), parser(LanguageEnv::<I>::char)))
             .expected("character")
-            .parse_state(input)
+            .parse_lazy(input)
     }
 
     fn char(input: State<I>) -> ParseResult<char, I> {
-        let (c, input) = try!(any().parse_state(input));
+        let (c, input) = try!(any().parse_lazy(input));
         let mut back_slash_char = satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_state(input)),
@@ -335,16 +361,16 @@ impl <'a, I> LanguageEnv<'a, I>
 
     ///Parses a string literal taking character escapes into account
     pub fn string_literal<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
-        self.parser(LanguageEnv::<I>::string_literal_parser)
+        self.parser(LanguageEnv::<I>::string_literal_parser, "string")
     }
 
     fn string_literal_parser(&self, input: State<I>) -> ParseResult<String, I> {
         self.lex(between(string("\""), string("\""), many(parser(LanguageEnv::<I>::string_char))))
-            .parse_state(input)
+            .parse_lazy(input)
     }
 
     fn string_char(input: State<I>) -> ParseResult<char, I> {
-        let (c, input) = try!(any().parse_state(input));
+        let (c, input) = try!(any().parse_lazy(input));
         let mut back_slash_char = satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_state(input)),
@@ -387,13 +413,18 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     ///Parses an integer
-    pub fn integer<'b>(&'b self) -> Lex<'a, 'b, FnParser<I, fn (State<I>) -> ParseResult<i64, I>>> {
-        self.lex(parser(LanguageEnv::integer_parser))
+    pub fn integer<'b>(&'b self) -> LanguageParser<'a, 'b, I, i64> {
+        self.parser(LanguageEnv::integer_, "integer")
     }
+
+    fn integer_<'b>(&'b self, input: State<I>) -> ParseResult<i64, I> {
+        self.lex(parser(LanguageEnv::<I>::integer_parser))
+            .parse_lazy(input)
+    }
+
     fn integer_parser(input: State<I>) -> ParseResult<i64, I> {
         let (s, input) = try!(many1::<String, _>(digit())
-            .expected("integer")
-            .parse_state(input));
+            .parse_lazy(input));
         let mut n = 0;
         for c in s.chars() {
             n = n * 10 + (c as i64 - '0' as i64);
@@ -402,8 +433,12 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     ///Parses a floating point number
-    pub fn float<'b>(&'b self) -> Lex<'a, 'b, FnParser<I, fn (State<I>) -> ParseResult<f64, I>>> {
+    pub fn float<'b>(&'b self) -> LanguageParser<'a, 'b, I, f64> {
+        self.parser(LanguageEnv::float_, "float")
+    }
+    fn float_<'b>(&'b self, input: State<I>) -> ParseResult<f64, I> {
         self.lex(parser(LanguageEnv::float_parser))
+            .parse_lazy(input)
     }
 
     fn float_parser(input: State<I>) -> ParseResult<f64, I> {
@@ -438,10 +473,9 @@ impl <'a, I> LanguageEnv<'a, I>
                             None => n
                         }
                     })
-                    .expected("float")
                     .parse_state(input)
             }))
-            .parse_state(input)
+            .parse_lazy(input)
     }
 }
 
@@ -505,14 +539,14 @@ impl <O, P, F, T> Expression<O, P, F>
         -> prim::ParseResult<P::Output, P::Input, <P::Input as Stream>::Item> {
 
         loop {
-            let ((op, op_assoc), rest) = tryb!(self.op.parse_state(input.clone().into_inner()));
+            let ((op, op_assoc), rest) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
             if op_assoc.precedence < min_precedence {
                 return Ok((l, input))
             }
             let (mut r, rest) = try!(rest.combine(|rest| self.term.parse_state(rest)));
             input = rest;
             loop {
-                let ((lookahead, assoc), _) = tryb!(self.op.parse_state(input.clone().into_inner()));
+                let ((_, assoc), _) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
                 let proceed = assoc.precedence > op_assoc.precedence
                     || assoc.fixity == Fixity::Right && assoc.precedence == op_assoc.precedence;
                 if !proceed {
@@ -534,9 +568,12 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
         , F: Fn(P::Output, T, P::Output) -> P::Output {
     type Input = P::Input;
     type Output = P::Output;
-    fn parse_state(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input, <Self::Input as Stream>::Item> {
-        let (l, input) = try!(self.term.parse_state(input));
+    fn parse_lazy(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input, <Self::Input as Stream>::Item> {
+        let (l, input) = try!(self.term.parse_lazy(input));
         self.parse_expr(0, l, input)
+    }
+    fn add_error(&mut self, errors: &mut ParseError<<P::Input as Stream>::Item>) {
+        self.term.add_error(errors);
     }
 }
 
@@ -590,7 +627,7 @@ pub fn expression_parser<O, P, F, T>(term: P, op: O, f: F) -> Expression<O, P, F
 mod tests {
     use super::*;
     use parser_combinators::*;
-    use parser_combinators::primitives::State;
+    use parser_combinators::primitives::{Error, State};
     
     fn env() -> LanguageEnv<'static, &'static str> {
         LanguageEnv::new(LanguageDef {
@@ -734,5 +771,12 @@ mod tests {
         let e_1_2 = op(Int(1), "^", Int(2));
         let e_3_4 = op(Int(3), "^", Int(4));
         assert_eq!(result, Ok((op(e_1_2, "&&", e_3_4), "")));
+    }
+    #[test]
+    fn expression_error() {
+        let e = env();
+        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
+        let errors = expr.parse("+ 1").map_err(|err| err.errors);
+        assert_eq!(errors, Err(vec![Error::Unexpected('+'.into()), Error::Expected("integer".into())]));
     }
 }
