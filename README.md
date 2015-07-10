@@ -32,6 +32,6 @@ fn main() {
 
 ## Links
 
-[Documention](https://marwes.github.io/parser-combinators_language/parser_combinators_language/index.html)
+[Documention](https://marwes.github.io/parser-combinators-language/parser_combinators_language/index.html)
 
 [parser-combinators](https://github.com/Marwes/parser-combinators)
