@@ -1,12 +1,12 @@
-# parser-combinators-language
-This a crate providing an easy way of constructing parsers which can easily parse various programming languages. It has much of the same API as [Text.Parsec.Token](hackage.haskell.org/package/parsec-3.1.9/docs/Text-Parsec-Token.html) but are otherwise a bit different to fit in to the ownership model of rust. The crate is an extension of the [parser-combinators](https://github.com/Marwes/parser-combinators) crate.
+# combine-language
+This a crate providing an easy way of constructing parsers which can easily parse various programming languages. It has much of the same API as [Text.Parsec.Token](hackage.haskell.org/package/parsec-3.1.9/docs/Text-Parsec-Token.html) but are otherwise a bit different to fit in to the ownership model of rust. The crate is an extension of the [combine](https://github.com/Marwes/combine) crate.
 
 ## Example
 ```rust
-extern crate parser_combinators;
-extern crate parser_combinators_language;
-use parser_combinators::*;
-use parser_combinators_language::*;
+extern crate combine;
+extern crate combine_language;
+use combine::*;
+use combine_language::*;
 fn main() {
     let env = LanguageEnv::new(LanguageDef {
         ident: Identifier {
@@ -32,6 +32,6 @@ fn main() {
 
 ## Links
 
-[Documention](https://marwes.github.io/parser-combinators-language/parser_combinators_language/index.html)
+[Documention](https://marwes.github.io/combine-language/combine_language/index.html)
 
-[parser-combinators](https://github.com/Marwes/parser-combinators)
+[combine](https://github.com/Marwes/combine)
