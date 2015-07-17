@@ -1,13 +1,13 @@
-//! An extension on the parser-combinators crate which allows for easy definition of lexing parsers
+//! An extension on the combine crate which allows for easy definition of lexing parsers
 //!
 //! # Example
 //!
 //! ```ignore
 //! # //TODO Unignore this once it stops ICEing
-//! # extern crate parser_combinators;
-//! # extern crate parser_combinators_language;
-//! # use parser_combinators::*;
-//! # use parser_combinators_language::*;
+//! # extern crate combine;
+//! # extern crate combine_language;
+//! # use combine::*;
+//! # use combine_language::*;
 //! # fn main() {
 //! let env = LanguageEnv::new(LanguageDef {
 //!     ident: Identifier {
@@ -31,16 +31,16 @@
 //! # }
 //! ```
 
-extern crate parser_combinators;
+extern crate combine;
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
-use parser_combinators::*;
-use parser_combinators::primitives as prim;
-use parser_combinators::char as pc;
-use parser_combinators::combinator::{Between, NotFollowedBy, Skip, Try, Token};
-use parser_combinators::primitives::{Consumed, Error, Stream, State};
+use combine::*;
+use combine::primitives as prim;
+use combine::char as pc;
+use combine::combinator::{Between, NotFollowedBy, Skip, Try, Token};
+use combine::primitives::{Consumed, Error, Stream};
 
 ///A language parser
 pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
@@ -581,8 +581,8 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
 ///combines a binary expression to new expressions.
 ///
 /// ```
-/// # extern crate parser_combinators as pc;
-/// # extern crate parser_combinators_language as pcl;
+/// # extern crate combine as pc;
+/// # extern crate combine_language as pcl;
 /// # use pc::*;
 /// # use pcl::*;
 /// use self::Expr::*;
@@ -626,8 +626,8 @@ pub fn expression_parser<O, P, F, T>(term: P, op: O, f: F) -> Expression<O, P, F
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parser_combinators::*;
-    use parser_combinators::primitives::{Error, State};
+    use combine::*;
+    use combine::primitives::{Error};
     
     fn env() -> LanguageEnv<'static, &'static str> {
         LanguageEnv::new(LanguageDef {
