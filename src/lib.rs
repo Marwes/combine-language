@@ -590,7 +590,8 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
 ///Constructs an expression parser out of a term parser, an operator parser and a function which
 ///combines a binary expression to new expressions.
 ///
-/// ```
+/// ```ignore
+/// //TODO unignore once its stops ICEing
 /// # extern crate combine as pc;
 /// # extern crate combine_language as pcl;
 /// # use pc::*;
