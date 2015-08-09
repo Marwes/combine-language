@@ -98,33 +98,37 @@ impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     type Output = ();
     type Input = I;
     fn parse_state(&mut self, input: State<I>) -> ParseResult<(), I> {
-        let comment_start = self.env.comment_start;
-        let comment_end = self.env.comment_end;
-        let comment_line = self.env.comment_line;
-        let first_char = comment_start.chars().next().unwrap();
-        let linecomment: &mut Parser<Input=I, Output=()> = &mut try(string(comment_line))
-            .and(skip_many(satisfy(|c| c != '\n')))
-            .map(|_| ());
-        let blockcomment: &mut Parser<Input=I, Output=()> = &mut try(string(comment_start))
-            .then(|_| parser(|input| {
-            let mut input = Consumed::Empty(input);
-            loop {
-                match input.clone().combine(|input| satisfy(|c| c != first_char).parse_state(input)) {
+        let mut comment_start = self.env.comment_start.borrow_mut();
+        let mut comment_end = self.env.comment_end.borrow_mut();
+        let mut comment_line = self.env.comment_line.borrow_mut();
+        parse_comment(&mut **comment_start, &mut **comment_end, &mut **comment_line, input)
+    }
+}
+
+fn parse_comment<I, P>(mut comment_start: P,
+                    mut comment_end: P,
+                    comment_line: P,
+                    input: State<I>) -> ParseResult<(), I>
+where I: Stream<Item=char>
+    , P: Parser<Input=I, Output=()> {
+    let linecomment: &mut (Parser<Input=I, Output=()>) = &mut try(comment_line)
+        .and(skip_many(satisfy(|c| c != '\n')))
+        .map(|_| ());
+    let blockcomment = parser(|input| {
+        let (_, mut input) = try!(try(&mut comment_start).parse_lazy(input));
+        loop {
+            match input.clone().combine(|input| try(&mut comment_end).parse_lazy(input)) {
+                Ok((_, input)) => return Ok(((), input)),
+                Err(_) => match input.combine(|input| any().parse_state(input)) {
                     Ok((_, rest)) => input = rest,
-                    Err(_) => match input.clone().combine(|input| try(string(comment_end)).parse_state(input)) {
-                        Ok((_, input)) => return Ok(((), input)),
-                        Err(_) => match input.combine(|input| any().parse_state(input)) {
-                            Ok((_, rest)) => input = rest,
-                            Err(err) => return Err(err)
-                        }
-                    }
+                    Err(err) => return Err(err)
                 }
             }
-        }));
-        let whitespace = skip_many1(space()).or(linecomment).or(blockcomment);
-        skip_many(whitespace)
-            .parse_state(input)
-    }
+        }
+    });
+    let whitespace = skip_many1(space()).or(linecomment).or(blockcomment);
+    skip_many(whitespace)
+        .parse_state(input)
 }
 
 
@@ -186,21 +190,24 @@ pub struct Identifier<PS, P>
 }
 
 /// A struct type which contains the necessary definitions to construct a language parser
-pub struct LanguageDef<IS, I, OS, O>
+pub struct LanguageDef<IS, I, OS, O, CL, CS, CE>
     where I: Parser<Output=char>
         , IS: Parser<Input=I::Input, Output=char>
         , O: Parser<Input=I::Input, Output=char>
-        , OS: Parser<Input=I::Input, Output=char> {
+        , OS: Parser<Input=I::Input, Output=char>
+        , CL: Parser<Input=I::Input, Output=()>
+        , CS: Parser<Input=I::Input, Output=()>
+        , CE: Parser<Input=I::Input, Output=()> {
     ///How to parse an identifier
     pub ident: Identifier<IS, I>,
     ///How to parse an operator
     pub op: Identifier<OS, O>,
     ///Describes the start of a line comment
-    pub comment_line: &'static str,
+    pub comment_line: CL,
     ///Describes the start of a block comment
-    pub comment_start: &'static str,
+    pub comment_start: CS,
     ///Describes the end of a block comment
-    pub comment_end: &'static str
+    pub comment_end: CE
 }
 
 type IdentParser<'a, I> = (Box<Parser<Input=I, Output=char> + 'a>, Box<Parser<Input=I, Output=char> + 'a>);
@@ -211,9 +218,9 @@ pub struct LanguageEnv<'a, I> {
     reserved: Vec<Cow<'static, str>>,
     op: RefCell<IdentParser<'a, I>>,
     op_reserved: Vec<Cow<'static, str>>,
-    comment_line: &'static str,
-    comment_start: &'static str,
-    comment_end: &'static str,
+    comment_line: RefCell<Box<Parser<Input=I, Output=()> + 'a>>,
+    comment_start: RefCell<Box<Parser<Input=I, Output=()> + 'a>>,
+    comment_end: RefCell<Box<Parser<Input=I, Output=()> + 'a>>,
     _marker: PhantomData<fn (I) -> I>
 }
 
@@ -221,11 +228,14 @@ impl <'a, I> LanguageEnv<'a, I>
     where I: Stream<Item=char> {
 
     ///Constructs a new parser from a language defintion
-    pub fn new<A, B, C, D>(def: LanguageDef<A, B, C, D>) -> LanguageEnv<'a, I>
+    pub fn new<A, B, C, D, E, F, G>(def: LanguageDef<A, B, C, D, E, F, G>) -> LanguageEnv<'a, I>
         where A: Parser<Input=I, Output=char> + 'a
             , B: Parser<Input=I, Output=char> + 'a
             , C: Parser<Input=I, Output=char> + 'a
-            , D: Parser<Input=I, Output=char> + 'a {
+            , D: Parser<Input=I, Output=char> + 'a
+            , E: Parser<Input=I, Output=()> + 'a
+            , F: Parser<Input=I, Output=()> + 'a
+            , G: Parser<Input=I, Output=()> + 'a {
         let LanguageDef {
             ident: Identifier { start: ident_start, rest: ident_rest, reserved: ident_reserved },
             op: Identifier { start: op_start, rest: op_rest, reserved: op_reserved },
@@ -238,9 +248,9 @@ impl <'a, I> LanguageEnv<'a, I>
             reserved: ident_reserved,
             op: RefCell::new((Box::new(op_start), Box::new(op_rest))),
             op_reserved: op_reserved,
-            comment_line: comment_line,
-            comment_start: comment_start,
-            comment_end: comment_end,
+            comment_line: RefCell::new(Box::new(comment_line)),
+            comment_start: RefCell::new(Box::new(comment_start)),
+            comment_end: RefCell::new(Box::new(comment_end)),
             _marker: PhantomData
         }
     }
@@ -641,9 +651,9 @@ mod tests {
                 rest: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
                 reserved: ["+", "-", "*", "/"].iter().map(|x| (*x).into()).collect()
             },
-            comment_start: "/*",
-            comment_end: "*/",
-            comment_line: "//"
+            comment_start: string("/*").map(|_| ()),
+            comment_end: string("*/").map(|_| ()),
+            comment_line: string("//").map(|_| ())
         })
     }
 
