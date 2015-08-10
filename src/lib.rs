@@ -57,7 +57,7 @@ impl <'a, 'b, I, O> Parser for LanguageParser<'a, 'b, I, O>
     fn parse_lazy(&mut self, input: State<I>) -> ParseResult<O, I> {
         (self.parser)(self.env, input)
     }
-    fn add_error(&mut self, errors: &mut ParseError<I::Item>) {
+    fn add_error(&mut self, errors: &mut ParseError<I>) {
         errors.errors.push(Error::Expected(self.expected.into()));
     }
 }
@@ -81,7 +81,7 @@ impl <'a, 'b, P> Parser for Lex<'a, 'b, P>
     fn parse_lazy(&mut self, input: State<P::Input>) -> ParseResult<P::Output, P::Input> {
         self.parser.parse_lazy(input)
     }
-    fn add_error(&mut self, errors: &mut ParseError<<P::Input as Stream>::Item>) {
+    fn add_error(&mut self, errors: &mut ParseError<P::Input>) {
         self.parser.add_error(errors);
     }
 }
@@ -148,7 +148,7 @@ impl <'a, 'b, I> Parser for Reserved<'a, 'b, I>
     fn parse_lazy(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
         self.parser.parse_lazy(input)
     }
-    fn add_error(&mut self, errors: &mut ParseError<I::Item>) {
+    fn add_error(&mut self, errors: &mut ParseError<I>) {
         self.parser.add_error(errors);
     }
 }
@@ -172,7 +172,7 @@ impl <'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
     fn parse_lazy(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
         self.parser.parse_lazy(input)
     }
-    fn add_error(&mut self, errors: &mut ParseError<I::Item>) {
+    fn add_error(&mut self, errors: &mut ParseError<I>) {
         self.parser.add_error(errors);
     }
 }
@@ -302,7 +302,8 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     ///Parses the reserved identifier `name`
-    pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
+    pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
+        where I::Range: 'b {
         let ident_letter = self.parser(LanguageEnv::<I>::ident_letter, "identifier letter");
         Reserved {
             parser: self.lex(try(string(name).skip(not_followed_by(ident_letter))))
@@ -338,7 +339,8 @@ impl <'a, I> LanguageEnv<'a, I>
     }
 
     ///Parses the reserved operator `name`
-    pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I> {
+    pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
+        where I::Range: 'b {
         let op_letter = self.parser(LanguageEnv::<I>::op_letter, "operator letter");
         Reserved { parser: self.lex(try(string(name).skip(not_followed_by(op_letter)))) }
     }
@@ -392,33 +394,38 @@ impl <'a, I> LanguageEnv<'a, I>
     ///Parses `p` inside angle brackets
     ///`< p >`
     pub fn angles<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input=I> {
+        where P: Parser<Input=I>
+            , I::Range: 'b {
         self.between('<', '>', parser)
     }
 
     ///Parses `p` inside braces
     ///`{ p }`
     pub fn braces<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input=I> {
+        where P: Parser<Input=I>
+            , I::Range: 'b {
         self.between('{', '}', parser)
     }
     
     ///Parses `p` inside brackets
     ///`[ p ]`
     pub fn brackets<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input=I> {
+        where P: Parser<Input=I>
+            , I::Range: 'b {
         self.between('[', ']', parser)
     }
 
     ///Parses `p` inside parentheses
     ///`( p )`
     pub fn parens<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input=I> {
+        where P: Parser<Input=I>
+            , I::Range: 'b {
         self.between('(', ')', parser)
     }
 
     fn between<'b, P>(&'b self, start: char, end: char, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input=I> {
+        where P: Parser<Input=I>
+            , I::Range: 'b {
         BetweenChar { parser: between(self.lex(char(start)), self.lex(char(end)), parser) }
     }
 
@@ -546,7 +553,7 @@ impl <O, P, F, T> Expression<O, P, F>
         , F: Fn(P::Output, T, P::Output) -> P::Output {
 
     fn parse_expr(&mut self, min_precedence: i32, mut l: P::Output, mut input: Consumed<State<P::Input>>)
-        -> prim::ParseResult<P::Output, P::Input, <P::Input as Stream>::Item> {
+        -> prim::ParseResult<P::Output, P::Input> {
 
         loop {
             let ((op, op_assoc), rest) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
@@ -578,11 +585,11 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
         , F: Fn(P::Output, T, P::Output) -> P::Output {
     type Input = P::Input;
     type Output = P::Output;
-    fn parse_lazy(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input, <Self::Input as Stream>::Item> {
+    fn parse_lazy(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input> {
         let (l, input) = try!(self.term.parse_lazy(input));
         self.parse_expr(0, l, input)
     }
-    fn add_error(&mut self, errors: &mut ParseError<<P::Input as Stream>::Item>) {
+    fn add_error(&mut self, errors: &mut ParseError<P::Input>) {
         self.term.add_error(errors);
     }
 }

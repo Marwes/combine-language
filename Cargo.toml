@@ -1,6 +1,6 @@
 [package]
 name = "combine-language"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["Markus Westerlind <marwes91@gmail.com>"]
 
 description = "Extra parser combinators, useful for parsing programming languages."
@@ -15,4 +15,4 @@ keywords = ["parser", "combinators", "ll", "language", "combine"]
 license = "MIT"
 
 [dependencies]
-combine = "1.0.*"
+combine = "^1.0.0"
