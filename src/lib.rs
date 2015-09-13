@@ -2,12 +2,11 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! # //TODO Unignore this once it stops ICEing
+//! ```
 //! # extern crate combine;
 //! # extern crate combine_language;
-//! # use combine::*;
-//! # use combine_language::*;
+//! # use combine::{alpha_num, letter, satisfy, string, Parser, ParserExt};
+//! # use combine_language::{Identifier, LanguageEnv, LanguageDef};
 //! # fn main() {
 //! let env = LanguageEnv::new(LanguageDef {
 //!     ident: Identifier {
@@ -16,17 +15,17 @@
 //!         reserved: ["if", "then", "else", "let", "in", "type"].iter().map(|x| (*x).into()).collect()
 //!     },
 //!     op: Identifier {
-//!         start: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
-//!         rest: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
+//!         start: satisfy(|c| "+-*/".chars().any(|x| x == c)),
+//!         rest: satisfy(|c| "+-*/".chars().any(|x| x == c)),
 //!         reserved: ["+", "-", "*", "/"].iter().map(|x| (*x).into()).collect()
 //!     },
-//!     comment_start: "/*",
-//!     comment_end: "*/",
-//!     comment_line: "//"
+//!     comment_start: string("/*").map(|_| ()),
+//!     comment_end: string("*/").map(|_| ()),
+//!     comment_line: string("//").map(|_| ())
 //! });
 //! let id = env.identifier();//An identifier parser
 //! let integer = env.integer();//An integer parser
-//! let result = (id, integer).parse_state("this /* Skips comments */ 42");
+//! let result = (id, integer).parse("this /* Skips comments */ 42");
 //! assert_eq!(result, Ok(((String::from("this"), 42), "")));
 //! # }
 //! ```
@@ -36,11 +35,14 @@ extern crate combine;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
-use combine::*;
-use combine::primitives as prim;
 use combine::char as pc;
 use combine::combinator::{Between, NotFollowedBy, Skip, Try, Token};
 use combine::primitives::{Consumed, Error, Stream};
+use combine::{
+    any, between, char, digit, optional, many, many1, not_followed_by,
+    parser, satisfy, skip_many, skip_many1, space, string, try, unexpected,
+    Parser, ParserExt, ParseError, ParseResult, State
+};
 
 ///A language parser
 pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
@@ -52,8 +54,9 @@ pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
 
 impl <'a, 'b, I, O> Parser for LanguageParser<'a, 'b, I, O>
     where I: Stream<Item=char> {
-    type Output = O;
     type Input = I;
+    type Output = O;
+
     fn parse_lazy(&mut self, input: State<I>) -> ParseResult<O, I> {
         (self.parser)(self.env, input)
     }
@@ -73,8 +76,9 @@ pub struct Lex<'a: 'b, 'b, P>
 impl <'a, 'b, P> Parser for Lex<'a, 'b, P>
     where P: Parser
         , P::Input: Stream<Item=char> + 'b {
-    type Output = P::Output;
     type Input = P::Input;
+    type Output = P::Output;
+
     fn parse_state(&mut self, input: State<P::Input>) -> ParseResult<P::Output, P::Input> {
         self.parser.parse_state(input)
     }
@@ -95,8 +99,8 @@ pub struct WhiteSpace<'a: 'b, 'b, I>
 
 impl <'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
     where I: Stream<Item=char> + 'b {
-    type Output = ();
     type Input = I;
+    type Output = ();
     fn parse_state(&mut self, input: State<I>) -> ParseResult<(), I> {
         let mut comment_start = self.env.comment_start.borrow_mut();
         let mut comment_end = self.env.comment_end.borrow_mut();
@@ -140,8 +144,8 @@ pub struct Reserved<'a: 'b, 'b, I>
 
 impl <'a, 'b, I> Parser for Reserved<'a, 'b, I>
     where I: Stream<Item=char> + 'b {
-    type Output = &'static str;
     type Input = I;
+    type Output = &'static str;
     fn parse_state(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
         self.parser.parse_state(input)
     }
@@ -163,8 +167,8 @@ pub struct BetweenChar<'a: 'b, 'b, P>
 impl <'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
     where I: Stream<Item=char> + 'b
         , P: Parser<Input=I> {
-    type Output = P::Output;
     type Input = I;
+    type Output = P::Output;
     fn parse_state(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
         self.parser.parse_state(input)
     }
@@ -553,7 +557,7 @@ impl <O, P, F, T> Expression<O, P, F>
         , F: Fn(P::Output, T, P::Output) -> P::Output {
 
     fn parse_expr(&mut self, min_precedence: i32, mut l: P::Output, mut input: Consumed<State<P::Input>>)
-        -> prim::ParseResult<P::Output, P::Input> {
+        -> ParseResult<P::Output, P::Input> {
 
         loop {
             let ((op, op_assoc), rest) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
@@ -585,7 +589,8 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
         , F: Fn(P::Output, T, P::Output) -> P::Output {
     type Input = P::Input;
     type Output = P::Output;
-    fn parse_lazy(&mut self, input: State<Self::Input>) -> prim::ParseResult<Self::Output, Self::Input> {
+
+    fn parse_lazy(&mut self, input: State<Self::Input>) -> ParseResult<Self::Output, Self::Input> {
         let (l, input) = try!(self.term.parse_lazy(input));
         self.parse_expr(0, l, input)
     }
@@ -597,12 +602,11 @@ impl <O, P, F, T> Parser for Expression<O, P, F>
 ///Constructs an expression parser out of a term parser, an operator parser and a function which
 ///combines a binary expression to new expressions.
 ///
-/// ```ignore
-/// //TODO unignore once its stops ICEing
-/// # extern crate combine as pc;
-/// # extern crate combine_language as pcl;
-/// # use pc::*;
-/// # use pcl::*;
+/// ```
+/// # extern crate combine;
+/// # extern crate combine_language;
+/// # use combine::{letter, many, spaces, string, Parser, ParserExt};
+/// # use combine_language::{expression_parser, Assoc, Fixity};
 /// use self::Expr::*;
 /// #[derive(PartialEq, Debug)]
 /// enum Expr {
