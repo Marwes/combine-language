@@ -1,4 +1,4 @@
-//! An extension on the combine crate which allows for easy definition of lexing parsers
+
 //!
 //! # Example
 //!
@@ -37,12 +37,17 @@ use std::marker::PhantomData;
 use std::borrow::Cow;
 use combine::char as pc;
 use combine::combinator::{Between, NotFollowedBy, Skip, Try, Token};
-use combine::primitives::{Consumed, Error, Stream};
+use combine::primitives::{Consumed, Error, Stream, Positioner};
 use combine::{
     any, between, char, digit, optional, many, many1, not_followed_by,
     parser, satisfy, skip_many, skip_many1, space, string, try, unexpected,
     Parser, ParserExt, ParseError, ParseResult, State
 };
+
+#[cfg(feature = "range_stream")]
+use combine::primitives::RangeStream;
+#[cfg(feature = "range_stream")]
+use combine::combinator::take;
 
 ///A language parser
 pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
@@ -305,6 +310,30 @@ impl <'a, I> LanguageEnv<'a, I>
         }
     }
 
+    #[cfg(feature = "range_stream")]
+    ///Parses an identifier, failing if it parses something that is a reserved identifier
+    pub fn range_identifier<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
+    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+        self.parser(LanguageEnv::<I>::parse_range_ident, "identifier")
+    }
+
+    #[cfg(feature = "range_stream")]
+    fn parse_range_ident(&self, input: State<I>) -> ParseResult<&'a str, I>
+    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+        let mut ident = self.ident.borrow_mut();
+        let (first, rest) = try!(ident.0.parse_lazy(input.clone()));
+        let mut iter = (&mut *ident.1).iter(rest.into_inner());
+        let len = iter.by_ref().fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
+        let (s, input) = try!(take(len).parse_lazy(input));
+        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
+        match self.reserved.iter().find(|r| **r == s) {
+            Some(ref _reserved) => {
+                Err(input.map(|input| ParseError::new(input.position, Error::Expected("identifier".into()))))
+            }
+            None => Ok((s, input))
+        }
+    }
+
     ///Parses the reserved identifier `name`
     pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
         where I::Range: 'b {
@@ -337,6 +366,30 @@ impl <'a, I> LanguageEnv<'a, I>
         match self.op_reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| ParseError::new(input.position, Error::Expected("operator".into()))))
+            }
+            None => Ok((s, input))
+        }
+    }
+
+    #[cfg(feature = "range_stream")]
+    ///Parses an identifier, failing if it parses something that is a reserved identifier
+    pub fn range_op<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
+    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+        self.parser(LanguageEnv::<I>::parse_range_op, "operator")
+    }
+
+    #[cfg(feature = "range_stream")]
+    fn parse_range_op(&self, input: State<I>) -> ParseResult<&'a str, I>
+    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+        let mut op = self.op.borrow_mut();
+        let (first, rest) = try!(op.0.parse_lazy(input.clone()));
+        let mut iter = (&mut *op.1).iter(rest.into_inner());
+        let len = iter.by_ref().fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
+        let (s, input) = try!(take(len).parse_lazy(input));
+        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
+        match self.op_reserved.iter().find(|r| **r == s) {
+            Some(ref _reserved) => {
+                Err(input.map(|input| ParseError::new(input.position, Error::Expected("identifier".into()))))
             }
             None => Ok((s, input))
         }
@@ -800,5 +853,29 @@ mod tests {
         let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
         let errors = expr.parse("+ 1").map_err(|err| err.errors);
         assert_eq!(errors, Err(vec![Error::Unexpected('+'.into()), Error::Expected("integer".into())]));
+    }
+
+    #[cfg(feature = "range_stream")]
+    #[test]
+    fn range_identifier() {
+        let e = env();
+        let mut id = e.range_identifier();
+        assert_eq!(id.parse("test123 123"), Ok(("test123", "123")));
+        assert_eq!(id.parse("123").map_err(|err| err.errors),
+            Err(vec![
+                Error::Unexpected('1'.into()), Error::Expected("identifier".into())
+            ]));
+    }
+
+    #[cfg(feature = "range_stream")]
+    #[test]
+    fn range_operator() {
+        let e = env();
+        let mut id = e.range_op();
+        assert_eq!(id.parse("+-+ 123"), Ok(("+-+", "123")));
+        assert_eq!(id.parse("abc").map_err(|err| err.errors),
+            Err(vec![
+                Error::Unexpected('a'.into()), Error::Expected("operator".into())
+            ]));
     }
 }

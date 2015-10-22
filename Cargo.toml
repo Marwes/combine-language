@@ -14,5 +14,12 @@ keywords = ["parser", "combinators", "ll", "language", "combine"]
 
 license = "MIT"
 
-[dependencies]
-combine = "^1.0.0"
+[dependencies.combine]
+version = "^1.0.1"
+
+[features]
+#Enables the use of combine's ranged stream, enabling some zero copy parsers in this crate
+range_stream = ["combine/range_stream"]
+
+#Feature for running tests for all features
+test = ["range_stream"]
