@@ -36,39 +36,20 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use combine::char as pc;
-use combine::combinator::{Between, NotFollowedBy, Skip, Try, Token};
-use combine::primitives::{Consumed, Error, Stream, Positioner};
+use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Try, Token};
+use combine::primitives::{Consumed, Error, Stream};
 use combine::{
-    any, between, char, digit, optional, many, many1, not_followed_by,
+    any, between, char, digit, env_parser, optional, many, many1, not_followed_by,
     parser, satisfy, skip_many, skip_many1, space, string, try, unexpected,
     Parser, ParserExt, ParseError, ParseResult, State
 };
 
 #[cfg(feature = "range_stream")]
-use combine::primitives::RangeStream;
+use combine::primitives::{RangeStream, Positioner};
 #[cfg(feature = "range_stream")]
 use combine::combinator::take;
 
-///A language parser
-pub struct LanguageParser<'a: 'b, 'b, I: 'b, T>
-    where I: Stream<Item=char> {
-    env: &'b LanguageEnv<'a, I>,
-    parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>,
-    expected: &'static str
-}
-
-impl <'a, 'b, I, O> Parser for LanguageParser<'a, 'b, I, O>
-    where I: Stream<Item=char> {
-    type Input = I;
-    type Output = O;
-
-    fn parse_lazy(&mut self, input: State<I>) -> ParseResult<O, I> {
-        (self.parser)(self.env, input)
-    }
-    fn add_error(&mut self, errors: &mut ParseError<I>) {
-        errors.errors.push(Error::Expected(self.expected.into()));
-    }
-}
+pub type LanguageParser<'a: 'b, 'b, I: 'b, T> = Expected<EnvParser<&'b LanguageEnv<'a, I>, I, T>>;
 
 ///A lexing parser for a language
 #[derive(Clone)]
@@ -268,7 +249,7 @@ impl <'a, I> LanguageEnv<'a, I>
                      parser: fn (&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>,
                      expected: &'static str
                     ) -> LanguageParser<'a, 'b, I, T> {
-        LanguageParser { env: self, parser: parser, expected: expected }
+        env_parser(self, parser).expected(expected)
     }
 
     ///Creates a lexing parser from `p`
