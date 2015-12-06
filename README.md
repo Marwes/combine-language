@@ -12,20 +12,22 @@ fn main() {
         ident: Identifier {
             start: letter(),
             rest: alpha_num(),
-            reserved: ["if", "then", "else", "let", "in", "type"].iter().map(|x| (*x).into()).collect()
+            reserved: ["if", "then", "else", "let", "in", "type"].iter()
+                                                                 .map(|x| (*x).into())
+                                                                 .collect(),
         },
         op: Identifier {
-            start: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
-            rest: satisfy(|c| "+-*/".chars().find(|x| *x == c).is_some()),
+            start: satisfy(|c| "+-*/".chars().any(|x| x == c)),
+            rest: satisfy(|c| "+-*/".chars().any(|x| x == c)),
             reserved: ["+", "-", "*", "/"].iter().map(|x| (*x).into()).collect()
         },
-        comment_start: "/*",
-        comment_end: "*/",
-        comment_line: "//"
+        comment_start: string("/*").map(|_| ()),
+        comment_end: string("*/").map(|_| ()),
+        comment_line: string("//").map(|_| ()),
     });
     let id = env.identifier();//An identifier parser
     let integer = env.integer();//An integer parser
-    let result = (id, integer).parse_state("this /* Skips comments */ 42");
+    let result = (id, integer).parse("this /* Skips comments */ 42");
     assert_eq!(result, Ok(((String::from("this"), 42), "")));
 }
 ```
