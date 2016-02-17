@@ -1,5 +1,4 @@
 
-//!
 //! # Example
 //!
 //! ```
@@ -42,7 +41,7 @@ use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Try
 use combine::primitives::{Consumed, Error, Stream};
 use combine::{any, between, char, digit, env_parser, optional, many, many1, not_followed_by,
               parser, satisfy, skip_many, skip_many1, space, string, try, unexpected, Parser,
-              ParserExt, ParseError, ParseResult, State};
+              ParserExt, ParseError, ParseResult};
 
 #[cfg(feature = "range_stream")]
 use combine::primitives::{RangeStream, Positioner};
@@ -67,10 +66,10 @@ impl<'a, 'b, P> Parser for Lex<'a, 'b, P>
     type Input = P::Input;
     type Output = P::Output;
 
-    fn parse_state(&mut self, input: State<P::Input>) -> ParseResult<P::Output, P::Input> {
+    fn parse_state(&mut self, input: P::Input) -> ParseResult<P::Output, P::Input> {
         self.parser.parse_state(input)
     }
-    fn parse_lazy(&mut self, input: State<P::Input>) -> ParseResult<P::Output, P::Input> {
+    fn parse_lazy(&mut self, input: P::Input) -> ParseResult<P::Output, P::Input> {
         self.parser.parse_lazy(input)
     }
     fn add_error(&mut self, errors: &mut ParseError<P::Input>) {
@@ -90,7 +89,7 @@ impl<'a, 'b, I> Parser for WhiteSpace<'a, 'b, I> where I: Stream<Item = char> + 
 {
     type Input = I;
     type Output = ();
-    fn parse_state(&mut self, input: State<I>) -> ParseResult<(), I> {
+    fn parse_state(&mut self, input: I) -> ParseResult<(), I> {
         let mut comment_start = self.env.comment_start.borrow_mut();
         let mut comment_end = self.env.comment_end.borrow_mut();
         let mut comment_line = self.env.comment_line.borrow_mut();
@@ -104,7 +103,7 @@ impl<'a, 'b, I> Parser for WhiteSpace<'a, 'b, I> where I: Stream<Item = char> + 
 fn parse_comment<I, P>(mut comment_start: P,
                        mut comment_end: P,
                        comment_line: P,
-                       input: State<I>)
+                       input: I)
                        -> ParseResult<(), I>
     where I: Stream<Item = char>,
           P: Parser<Input = I, Output = ()>
@@ -143,10 +142,10 @@ impl<'a, 'b, I> Parser for Reserved<'a, 'b, I> where I: Stream<Item = char> + 'b
 {
     type Input = I;
     type Output = &'static str;
-    fn parse_state(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
+    fn parse_state(&mut self, input: I) -> ParseResult<&'static str, I> {
         self.parser.parse_state(input)
     }
-    fn parse_lazy(&mut self, input: State<I>) -> ParseResult<&'static str, I> {
+    fn parse_lazy(&mut self, input: I) -> ParseResult<&'static str, I> {
         self.parser.parse_lazy(input)
     }
     fn add_error(&mut self, errors: &mut ParseError<I>) {
@@ -168,11 +167,11 @@ impl<'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
 {
     type Input = I;
     type Output = P::Output;
-    fn parse_state(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
+    fn parse_state(&mut self, input: I) -> ParseResult<P::Output, I> {
         self.parser.parse_state(input)
     }
 
-    fn parse_lazy(&mut self, input: State<I>) -> ParseResult<P::Output, I> {
+    fn parse_lazy(&mut self, input: I) -> ParseResult<P::Output, I> {
         self.parser.parse_lazy(input)
     }
     fn add_error(&mut self, errors: &mut ParseError<I>) {
@@ -262,7 +261,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
     }
 
     fn parser<'b, T>(&'b self,
-                     parser: fn(&LanguageEnv<'a, I>, State<I>) -> ParseResult<T, I>,
+                     parser: fn(&LanguageEnv<'a, I>, I) -> ParseResult<T, I>,
                      expected: &'static str)
                      -> LanguageParser<'a, 'b, I, T> {
         env_parser(self, parser).expected(expected)
@@ -290,7 +289,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         self.parser(LanguageEnv::<I>::parse_ident, "identifier")
     }
 
-    fn parse_ident(&self, input: State<I>) -> ParseResult<String, I> {
+    fn parse_ident(&self, input: I) -> ParseResult<String, I> {
         let mut ident = self.ident.borrow_mut();
         let (first, input) = try!(ident.0.parse_lazy(input));
         let mut buffer = String::new();
@@ -303,7 +302,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         match self.reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
-                    ParseError::new(input.position, Error::Expected("identifier".into()))
+                    ParseError::new(input.position(), Error::Expected("identifier".into()))
                 }))
             }
             None => Ok((s, input)),
@@ -318,7 +317,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
     }
 
     #[cfg(feature = "range_stream")]
-    fn parse_range_ident(&self, input: State<I>) -> ParseResult<&'a str, I>
+    fn parse_range_ident(&self, input: I) -> ParseResult<&'a str, I>
     where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
         let mut ident = self.ident.borrow_mut();
         let (first, rest) = try!(ident.0.parse_lazy(input.clone()));
@@ -329,7 +328,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         match self.reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
-                    ParseError::new(input.position, Error::Expected("identifier".into()))
+                    ParseError::new(input.position(), Error::Expected("identifier".into()))
                 }))
             }
             None => Ok((s, input)),
@@ -344,7 +343,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         Reserved { parser: self.lex(try(string(name).skip(not_followed_by(ident_letter)))) }
     }
 
-    fn ident_letter(&self, input: State<I>) -> ParseResult<char, I> {
+    fn ident_letter(&self, input: I) -> ParseResult<char, I> {
         self.ident
             .borrow_mut()
             .1
@@ -356,7 +355,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         self.parser(LanguageEnv::<I>::parse_op, "operator")
     }
 
-    fn parse_op(&self, input: State<I>) -> ParseResult<String, I> {
+    fn parse_op(&self, input: I) -> ParseResult<String, I> {
         let mut op = self.op.borrow_mut();
         let (first, input) = try!(op.0.parse_lazy(input));
         let mut buffer = String::new();
@@ -369,7 +368,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         match self.op_reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
-                    ParseError::new(input.position, Error::Expected("operator".into()))
+                    ParseError::new(input.position(), Error::Expected("operator".into()))
                 }))
             }
             None => Ok((s, input)),
@@ -384,7 +383,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
     }
 
     #[cfg(feature = "range_stream")]
-    fn parse_range_op(&self, input: State<I>) -> ParseResult<&'a str, I>
+    fn parse_range_op(&self, input: I) -> ParseResult<&'a str, I>
     where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
         let mut op = self.op.borrow_mut();
         let (first, rest) = try!(op.0.parse_lazy(input.clone()));
@@ -395,7 +394,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         match self.op_reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
-                    ParseError::new(input.position, Error::Expected("identifier".into()))
+                    ParseError::new(input.position(), Error::Expected("identifier".into()))
                 }))
             }
             None => Ok((s, input)),
@@ -410,7 +409,7 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         Reserved { parser: self.lex(try(string(name).skip(not_followed_by(op_letter)))) }
     }
 
-    fn op_letter(&self, input: State<I>) -> ParseResult<char, I> {
+    fn op_letter(&self, input: I) -> ParseResult<char, I> {
         self.op
             .borrow_mut()
             .1
@@ -422,13 +421,13 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         self.parser(LanguageEnv::<I>::char_literal_parser, "character")
     }
 
-    fn char_literal_parser(&self, input: State<I>) -> ParseResult<char, I> {
+    fn char_literal_parser(&self, input: I) -> ParseResult<char, I> {
         self.lex(between(string("\'"), string("\'"), parser(LanguageEnv::<I>::char)))
             .expected("character")
             .parse_lazy(input)
     }
 
-    fn char(input: State<I>) -> ParseResult<char, I> {
+    fn char(input: I) -> ParseResult<char, I> {
         let (c, input) = try!(any().parse_lazy(input));
         let mut back_slash_char = satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some())
                                       .map(escape_char);
@@ -444,14 +443,14 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         self.parser(LanguageEnv::<I>::string_literal_parser, "string")
     }
 
-    fn string_literal_parser(&self, input: State<I>) -> ParseResult<String, I> {
+    fn string_literal_parser(&self, input: I) -> ParseResult<String, I> {
         self.lex(between(string("\""),
                          string("\""),
                          many(parser(LanguageEnv::<I>::string_char))))
             .parse_lazy(input)
     }
 
-    fn string_char(input: State<I>) -> ParseResult<char, I> {
+    fn string_char(input: I) -> ParseResult<char, I> {
         let (c, input) = try!(any().parse_lazy(input));
         let mut back_slash_char = satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some())
                                       .map(escape_char);
@@ -510,12 +509,12 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
         self.parser(LanguageEnv::integer_, "integer")
     }
 
-    fn integer_<'b>(&'b self, input: State<I>) -> ParseResult<i64, I> {
+    fn integer_<'b>(&'b self, input: I) -> ParseResult<i64, I> {
         self.lex(parser(LanguageEnv::<I>::integer_parser))
             .parse_lazy(input)
     }
 
-    fn integer_parser(input: State<I>) -> ParseResult<i64, I> {
+    fn integer_parser(input: I) -> ParseResult<i64, I> {
         let (s, input) = try!(many1::<String, _>(digit()).parse_lazy(input));
         let mut n = 0;
         for c in s.chars() {
@@ -528,12 +527,12 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
     pub fn float<'b>(&'b self) -> LanguageParser<'a, 'b, I, f64> {
         self.parser(LanguageEnv::float_, "float")
     }
-    fn float_<'b>(&'b self, input: State<I>) -> ParseResult<f64, I> {
+    fn float_<'b>(&'b self, input: I) -> ParseResult<f64, I> {
         self.lex(parser(LanguageEnv::float_parser))
             .parse_lazy(input)
     }
 
-    fn float_parser(input: State<I>) -> ParseResult<f64, I> {
+    fn float_parser(input: I) -> ParseResult<f64, I> {
         let i = parser(LanguageEnv::<I>::integer_parser).map(|x| x as f64);
         let fractional = many(digit()).map(|digits: String| {
             let mut magnitude = 1.0;
@@ -646,7 +645,7 @@ impl<O, P, F, T> Expression<O, P, F>
     fn parse_expr(&mut self,
                   min_precedence: i32,
                   mut l: P::Output,
-                  mut input: Consumed<State<P::Input>>)
+                  mut input: Consumed<P::Input>)
                   -> ParseResult<P::Output, P::Input> {
 
         loop {
@@ -682,7 +681,7 @@ impl<O, P, F, T> Parser for Expression<O, P, F>
     type Input = P::Input;
     type Output = P::Output;
 
-    fn parse_lazy(&mut self, input: State<Self::Input>) -> ParseResult<Self::Output, Self::Input> {
+    fn parse_lazy(&mut self, input: Self::Input) -> ParseResult<Self::Output, Self::Input> {
         let (l, input) = try!(self.term.parse_lazy(input));
         self.parse_expr(0, l, input)
     }
@@ -846,7 +845,7 @@ mod tests {
     }
 
 
-    fn op_parser(input: State<&'static str>) -> ParseResult<(&'static str, Assoc), &'static str> {
+    fn op_parser(input: &'static str) -> ParseResult<(&'static str, Assoc), &'static str> {
         let mut ops = ["*", "/", "+", "-", "^", "&&", "||", "!!"]
                           .iter()
                           .cloned()
