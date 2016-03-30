@@ -44,7 +44,7 @@ use combine::{any, between, char, digit, env_parser, optional, many, many1, not_
               ParserExt, ParseError, ParseResult};
 
 #[cfg(feature = "range_stream")]
-use combine::primitives::{RangeStream, Positioner};
+use combine::primitives::RangeStream;
 #[cfg(feature = "range_stream")]
 use combine::combinator::take;
 
@@ -312,13 +312,13 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
     #[cfg(feature = "range_stream")]
     ///Parses an identifier, failing if it parses something that is a reserved identifier
     pub fn range_identifier<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
-    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+    where I: RangeStream<Range=&'a str> {
         self.parser(LanguageEnv::<I>::parse_range_ident, "identifier")
     }
 
     #[cfg(feature = "range_stream")]
     fn parse_range_ident(&self, input: I) -> ParseResult<&'a str, I>
-    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+    where I: RangeStream<Range=&'a str> {
         let mut ident = self.ident.borrow_mut();
         let (first, rest) = try!(ident.0.parse_lazy(input.clone()));
         let mut iter = (&mut *ident.1).iter(rest.into_inner());
@@ -378,13 +378,13 @@ impl<'a, I> LanguageEnv<'a, I> where I: Stream<Item = char>
     #[cfg(feature = "range_stream")]
     ///Parses an identifier, failing if it parses something that is a reserved identifier
     pub fn range_op<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
-    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+    where I: RangeStream<Range=&'a str>  {
         self.parser(LanguageEnv::<I>::parse_range_op, "operator")
     }
 
     #[cfg(feature = "range_stream")]
     fn parse_range_op(&self, input: I) -> ParseResult<&'a str, I>
-    where I: RangeStream<Range=&'a str> + Positioner<Position=<char as Positioner>::Position> {
+    where I: RangeStream<Range=&'a str> {
         let mut op = self.op.borrow_mut();
         let (first, rest) = try!(op.0.parse_lazy(input.clone()));
         let mut iter = (&mut *op.1).iter(rest.into_inner());
