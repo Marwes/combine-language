@@ -218,6 +218,8 @@ type IdentParser<'a, I> = (Box<Parser<Input = I, Output = char> + 'a>,
                            Box<Parser<Input = I, Output = char> + 'a>);
 
 /// A type containing parsers for a specific language.
+/// For some parsers there are two version where the parser which ends with a `_` is a variant
+/// which does not skip whitespace and comments after parsing the token itself.
 pub struct LanguageEnv<'a, I> {
     ident: RefCell<IdentParser<'a, I>>,
     reserved: Vec<Cow<'static, str>>,
@@ -286,7 +288,11 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses an identifier, failing if it parses something that is a reserved identifier
-    pub fn identifier<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
+    pub fn identifier<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, String> {
+        self.lex(self.identifier_())
+    }
+
+    pub fn identifier_<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
         self.parser(LanguageEnv::<I>::parse_ident, "identifier")
     }
 
@@ -299,7 +305,6 @@ impl<'a, I> LanguageEnv<'a, I>
         buffer.extend(iter.by_ref());
         // We definitely consumed the char `first` so make sure that the input is consumed
         let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
-        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
         match self.reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
@@ -311,7 +316,13 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses an identifier, failing if it parses something that is a reserved identifier
-    pub fn range_identifier<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
+    pub fn range_identifier<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, &'a str>
+        where I: RangeStream<Range = &'a str>
+    {
+        self.lex(self.range_identifier_())
+    }
+
+    pub fn range_identifier_<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
         where I: RangeStream<Range = &'a str>
     {
         self.parser(LanguageEnv::<I>::parse_range_ident, "identifier")
@@ -325,7 +336,6 @@ impl<'a, I> LanguageEnv<'a, I>
         let mut iter = (&mut *ident.1).iter(rest.into_inner());
         let len = iter.by_ref().fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
         let (s, input) = try!(take(len).parse_lazy(input));
-        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
         match self.reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
@@ -352,7 +362,11 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses an operator, failing if it parses something that is a reserved operator
-    pub fn op<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
+    pub fn op<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, String> {
+        self.lex(self.op_())
+    }
+
+    pub fn op_<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
         self.parser(LanguageEnv::<I>::parse_op, "operator")
     }
 
@@ -365,7 +379,6 @@ impl<'a, I> LanguageEnv<'a, I>
         buffer.extend(iter.by_ref());
         // We definitely consumed the char `first` so make sure that the input is consumed
         let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
-        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
         match self.op_reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
@@ -377,7 +390,13 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses an identifier, failing if it parses something that is a reserved identifier
-    pub fn range_op<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
+    pub fn range_op<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, &'a str>
+        where I: RangeStream<Range = &'a str>
+    {
+        self.lex(self.range_op_())
+    }
+
+    pub fn range_op_<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
         where I: RangeStream<Range = &'a str>
     {
         self.parser(LanguageEnv::<I>::parse_range_op, "operator")
@@ -403,7 +422,13 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses the reserved operator `name`
-    pub fn reserved_op<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
+    pub fn reserved_op<'b>(&'b self, name: &'static str) -> Lex<'a, 'b, Reserved<'a, 'b, I>>
+        where I::Range: 'b
+    {
+        self.lex(self.reserved_op_(name))
+    }
+
+    pub fn reserved_op_<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
         where I::Range: 'b
     {
         let op_letter = self.parser(LanguageEnv::<I>::op_letter, "operator letter");
@@ -419,14 +444,14 @@ impl<'a, I> LanguageEnv<'a, I>
 
     /// Parses a character literal taking escape sequences into account
     pub fn char_literal<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, char> {
-        self.lex(self.char_literal_parser())
+        self.lex(self.char_literal_())
     }
 
-    pub fn char_literal_parser<'b>(&'b self) -> LanguageParser<'a, 'b, I, char> {
-        self.parser(LanguageEnv::<I>::char_literal_parser_, "character")
+    pub fn char_literal_<'b>(&'b self) -> LanguageParser<'a, 'b, I, char> {
+        self.parser(LanguageEnv::<I>::char_literal_parser, "character")
     }
 
-    fn char_literal_parser_(&self, input: I) -> ParseResult<char, I> {
+    fn char_literal_parser(&self, input: I) -> ParseResult<char, I> {
         between(string("\'"), string("\'"), parser(LanguageEnv::<I>::char))
             .expected("character")
             .parse_lazy(input)
@@ -445,14 +470,14 @@ impl<'a, I> LanguageEnv<'a, I>
 
     /// Parses a string literal taking character escapes into account
     pub fn string_literal<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, String> {
-        self.lex(self.string_literal_parser())
+        self.lex(self.string_literal_())
     }
 
-    pub fn string_literal_parser<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
-        self.parser(LanguageEnv::<I>::string_literal_parser_, "string")
+    pub fn string_literal_<'b>(&'b self) -> LanguageParser<'a, 'b, I, String> {
+        self.parser(LanguageEnv::<I>::string_literal_parser, "string")
     }
 
-    fn string_literal_parser_(&self, input: I) -> ParseResult<String, I> {
+    fn string_literal_parser(&self, input: I) -> ParseResult<String, I> {
         between(string("\""),
                 string("\""),
                 many(parser(LanguageEnv::<I>::string_char)))
@@ -514,16 +539,15 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses an integer
-    pub fn integer<'b>(&'b self) -> LanguageParser<'a, 'b, I, i64> {
-        self.parser(LanguageEnv::integer_, "integer")
+    pub fn integer<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, i64> {
+        self.lex(self.integer_())
     }
 
-    fn integer_<'b>(&'b self, input: I) -> ParseResult<i64, I> {
-        self.lex(parser(LanguageEnv::<I>::integer_parser))
-            .parse_lazy(input)
+    pub fn integer_<'b>(&'b self) -> LanguageParser<'a, 'b, I, i64> {
+        self.parser(LanguageEnv::integer_parser, "integer")
     }
 
-    fn integer_parser(input: I) -> ParseResult<i64, I> {
+    fn integer_parser(&self, input: I) -> ParseResult<i64, I> {
         let (s, input) = try!(many1::<String, _>(digit()).parse_lazy(input));
         let mut n = 0;
         for c in s.chars() {
@@ -533,16 +557,16 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     /// Parses a floating point number
-    pub fn float<'b>(&'b self) -> LanguageParser<'a, 'b, I, f64> {
-        self.parser(LanguageEnv::float_, "float")
-    }
-    fn float_<'b>(&'b self, input: I) -> ParseResult<f64, I> {
-        self.lex(parser(LanguageEnv::float_parser))
-            .parse_lazy(input)
+    pub fn float<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, f64> {
+        self.lex(self.float_())
     }
 
-    fn float_parser(input: I) -> ParseResult<f64, I> {
-        let i = parser(LanguageEnv::<I>::integer_parser).map(|x| x as f64);
+    pub fn float_<'b>(&'b self) -> LanguageParser<'a, 'b, I, f64> {
+        self.parser(LanguageEnv::float_parser, "float")
+    }
+
+    fn float_parser(&self, input: I) -> ParseResult<f64, I> {
+        let i = self.integer_().map(|x| x as f64);
         let fractional = many(digit()).map(|digits: String| {
             let mut magnitude = 1.0;
             digits.chars().fold(0.0, |acc, d| {
@@ -572,7 +596,7 @@ impl<'a, I> LanguageEnv<'a, I>
                         x - y
                     };
                     let exp = satisfy(|c| c == 'e' || c == 'E')
-                        .with(optional(string("-")).and(parser(LanguageEnv::<I>::integer_parser)));
+                        .with(optional(string("-")).and(self.integer_()));
                     optional(exp)
                         .map(|exp_option| {
                             match exp_option {
