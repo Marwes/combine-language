@@ -39,9 +39,9 @@ use std::borrow::Cow;
 use combine::char as pc;
 use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Try, Token};
 use combine::primitives::{Consumed, Error, Stream};
-use combine::{any, between, char, digit, env_parser, optional, many, many1, not_followed_by,
-              parser, satisfy, skip_many, skip_many1, space, string, try, unexpected, Parser,
-              ParserExt, ParseError, ParseResult};
+use combine::{any, between, char, digit, env_parser, optional, many, not_followed_by, parser,
+              satisfy, skip_many, skip_many1, space, string, try, unexpected, Parser, ParserExt,
+              ParseError, ParseResult};
 
 use combine::primitives::RangeStream;
 use combine::combinator::take;
@@ -228,6 +228,8 @@ pub struct LanguageEnv<'a, I> {
     comment_line: RefCell<Box<Parser<Input = I, Output = ()> + 'a>>,
     comment_start: RefCell<Box<Parser<Input = I, Output = ()> + 'a>>,
     comment_end: RefCell<Box<Parser<Input = I, Output = ()> + 'a>>,
+    /// A buffer for storing characters when parsing numbers
+    buffer: RefCell<String>,
     _marker: PhantomData<fn(I) -> I>,
 }
 
@@ -259,6 +261,7 @@ impl<'a, I> LanguageEnv<'a, I>
             comment_line: RefCell::new(Box::new(comment_line)),
             comment_start: RefCell::new(Box::new(comment_start)),
             comment_end: RefCell::new(Box::new(comment_end)),
+            buffer: RefCell::new(String::new()),
             _marker: PhantomData,
         }
     }
@@ -548,12 +551,19 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     fn integer_parser(&self, input: I) -> ParseResult<i64, I> {
-        let (s, input) = try!(many1::<String, _>(digit()).parse_lazy(input));
-        let mut n = 0;
-        for c in s.chars() {
-            n = n * 10 + (c as i64 - '0' as i64);
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.clear();
+        let ((), input) = try!(LanguageEnv::push_digits(&mut buffer, input));
+        match buffer.parse() {
+            Ok(i) => Ok((i, input)),
+            Err(_) => Err(input.map(|input| ParseError::empty(input.position()))),
         }
-        Ok((n, input))
+    }
+
+    fn push_digits(buffer: &mut String, input: I) -> ParseResult<(), I> {
+        let mut iter = digit().iter(input);
+        buffer.extend(&mut iter);
+        iter.into_result(())
     }
 
     /// Parses a floating point number
@@ -566,55 +576,40 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     fn float_parser(&self, input: I) -> ParseResult<f64, I> {
-        let i = self.integer_().map(|x| x as f64);
-        let fractional = many(digit()).map(|digits: String| {
-            let mut magnitude = 1.0;
-            digits.chars().fold(0.0, |acc, d| {
-                magnitude /= 10.0;
-                match d.to_digit(10) {
-                    Some(d) => acc + (d as f64) * magnitude,
-                    None => panic!("Not a digit"),
-                }
-            })
-        });
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.clear();
 
-        optional(string("-"))
-            .and(i)
-            .map(|(sign, n)| {
-                if sign.is_some() {
-                    -n
-                } else {
-                    n
+        let (sign, input) = try!(optional(char('-')).parse_lazy(input));
+        if let Some(sign) = sign {
+            buffer.push(sign);
+        }
+        let ((), input) = try!(input.combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+
+        let (dot, mut result_input) =
+            try!(input.combine(|input| optional(char('.')).parse_lazy(input)));
+        if let Some(dot) = dot {
+            buffer.push(dot);
+            let ((), input) = try!(result_input.clone()
+                .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+            let (exp, input) = try!(input.combine(|input| {
+                optional((char('e').or(char('E')), optional(char('-')))).parse_state(input)
+            }));
+            result_input = input;
+            if let Some((exp, sign)) = exp {
+                buffer.push(exp);
+                if let Some(sign) = sign {
+                    buffer.push(sign);
                 }
-            })
-            .and(optional(string(".")).with(fractional))
-            .then(|(x, y)| {
-                parser(move |input| {
-                    let n = if x > 0.0 {
-                        x + y
-                    } else {
-                        x - y
-                    };
-                    let exp = satisfy(|c| c == 'e' || c == 'E')
-                        .with(optional(string("-")).and(self.integer_()));
-                    optional(exp)
-                        .map(|exp_option| {
-                            match exp_option {
-                                Some((sign, e)) => {
-                                    let e = if sign.is_some() {
-                                        -e
-                                    } else {
-                                        e
-                                    };
-                                    n * 10.0f64.powi(e as i32)
-                                }
-                                None => n,
-                            }
-                        })
-                        .parse_state(input)
-                })
-            })
-            .parse_lazy(input)
+                let ((), input) = try!(result_input.clone()
+                    .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+                result_input = input;
+            }
+        }
+        println!("{}", *buffer);
+        match buffer.parse() {
+            Ok(f) => Ok((f, result_input)),
+            Err(_) => Err(result_input.map(|input| ParseError::empty(input.position()))),
+        }
     }
 }
 
@@ -826,6 +821,24 @@ mod tests {
             .integer()
             .parse("213  ");
         assert_eq!(result, Ok((213, "")));
+    }
+
+    #[test]
+    fn float_literal() {
+        let result = env()
+            .float()
+            .parse("123.456  ");
+        assert_eq!(result, Ok((123.456, "")));
+
+        let result = env()
+            .float()
+            .parse("123.456e10  ");
+        assert_eq!(result, Ok((123.456e10, "")));
+
+        let result = env()
+            .float()
+            .parse("123.456E-10  ");
+        assert_eq!(result, Ok((123.456E-10, "")));
     }
 
     #[test]
