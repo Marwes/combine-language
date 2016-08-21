@@ -4,7 +4,8 @@
 //! ```
 //! # extern crate combine;
 //! # extern crate combine_language;
-//! # use combine::{alpha_num, letter, satisfy, string, Parser, ParserExt};
+//! # use combine::{satisfy, Parser, ParserExt};
+//! # use combine::char::{alpha_num, letter, string};
 //! # use combine_language::{Identifier, LanguageEnv, LanguageDef};
 //! # fn main() {
 //! let env = LanguageEnv::new(LanguageDef {
@@ -37,11 +38,11 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use combine::char as pc;
+use combine::char::{char, digit, space, string};
 use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Try, Token};
 use combine::primitives::{Consumed, Error, Stream};
-use combine::{any, between, char, digit, env_parser, optional, many, not_followed_by, parser,
-              satisfy, skip_many, skip_many1, space, string, try, unexpected, Parser, ParserExt,
-              ParseError, ParseResult};
+use combine::{any, between, char, env_parser, optional, many, not_followed_by, parser, satisfy,
+              skip_many, skip_many1, try, unexpected, Parser, ParserExt, ParseError, ParseResult};
 
 use combine::primitives::RangeStream;
 use combine::combinator::take;
@@ -413,7 +414,6 @@ impl<'a, I> LanguageEnv<'a, I>
         let mut iter = (&mut *op.1).iter(rest.into_inner());
         let len = iter.by_ref().fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
         let (s, input) = try!(take(len).parse_lazy(input));
-        let ((), input) = try!(input.combine(|input| self.white_space().parse_state(input)));
         match self.op_reserved.iter().find(|r| **r == s) {
             Some(ref _reserved) => {
                 Err(input.map(|input| {
@@ -605,7 +605,6 @@ impl<'a, I> LanguageEnv<'a, I>
                 result_input = input;
             }
         }
-        println!("{}", *buffer);
         match buffer.parse() {
             Ok(f) => Ok((f, result_input)),
             Err(_) => Err(result_input.map(|input| ParseError::empty(input.position()))),
@@ -723,7 +722,8 @@ impl<O, P, F, T> Parser for Expression<O, P, F>
 /// ```
 /// # extern crate combine;
 /// # extern crate combine_language;
-/// # use combine::{letter, many, spaces, string, Parser, ParserExt};
+/// # use combine::{many, Parser, ParserExt};
+/// # use combine::char::{letter, spaces, string};
 /// # use combine_language::{expression_parser, Assoc, Fixity};
 /// use self::Expr::*;
 /// #[derive(PartialEq, Debug)]
@@ -772,6 +772,7 @@ pub fn expression_parser<O, P, F, T>(term: P, op: O, f: F) -> Expression<O, P, F
 mod tests {
     use super::*;
     use combine::*;
+    use combine::char::{alpha_num, letter, string};
     use combine::primitives::Error;
 
     fn env() -> LanguageEnv<'static, &'static str> {
@@ -957,6 +958,7 @@ mod tests {
     fn range_identifier() {
         let e = env();
         let mut id = e.range_identifier();
+        assert_eq!(id.parse("t"), Ok(("t", "")));
         assert_eq!(id.parse("test123 123"), Ok(("test123", "123")));
         assert_eq!(id.parse("123").map_err(|err| err.errors),
                    Err(vec![Error::Unexpected('1'.into()), Error::Expected("identifier".into())]));
