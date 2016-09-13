@@ -15,4 +15,4 @@ keywords = ["parser", "combinators", "ll", "language", "combine"]
 license = "MIT"
 
 [dependencies.combine]
-version = "2.0.0-beta2"
+version = "2.0.0-beta3"
