@@ -1,6 +1,6 @@
 [package]
 name = "combine-language"
-version = "2.0.0-beta3"
+version = "2.0.0-beta4"
 authors = ["Markus Westerlind <marwes91@gmail.com>"]
 
 description = "Extra parser combinators, useful for parsing programming languages."
