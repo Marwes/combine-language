@@ -4,7 +4,7 @@
 //! ```
 //! # extern crate combine;
 //! # extern crate combine_language;
-//! # use combine::{satisfy, Parser, ParserExt};
+//! # use combine::{satisfy, Parser};
 //! # use combine::char::{alpha_num, letter, string};
 //! # use combine_language::{Identifier, LanguageEnv, LanguageDef};
 //! # fn main() {
@@ -743,7 +743,7 @@ impl<O, P, F, T> Parser for Expression<O, P, F>
 /// ```
 /// # extern crate combine;
 /// # extern crate combine_language;
-/// # use combine::{many, Parser, ParserExt};
+/// # use combine::{many, Parser};
 /// # use combine::char::{letter, spaces, string};
 /// # use combine_language::{expression_parser, Assoc, Fixity};
 /// use self::Expr::*;
