@@ -42,7 +42,7 @@ use combine::char::{char, digit, space, string, Str};
 use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Try, Token};
 use combine::primitives::{Consumed, Error, Stream};
 use combine::primitives::FastResult::*;
-use combine::{any, between, char, env_parser, optional, many, not_followed_by, parser, satisfy,
+use combine::{any, between, char, env_parser, optional, look_ahead, many, not_followed_by, parser, satisfy,
               skip_many, skip_many1, try, unexpected, Parser, ParseError, ConsumedResult,
               ParseResult};
 
@@ -604,26 +604,30 @@ impl<'a, I> LanguageEnv<'a, I>
             buffer.push(sign);
         }
         let ((), input) = try!(input.combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+        let (_, input) = try!(input.combine(|input| look_ahead(char('e').or(char('E')).or(char('.'))).parse_lazy(input).into()));
 
         let (dot, mut result_input) =
             try!(input.combine(|input| optional(char('.')).parse_lazy(input).into()));
-        if let Some(dot) = dot {
+        let input = if let Some(dot) = dot {
             buffer.push(dot);
             let ((), input) = try!(result_input.clone()
                 .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
-            let (exp, input) = try!(input.combine(|input| {
-                optional((char('e').or(char('E')), optional(char('-')))).parse_stream(input)
-            }));
-            result_input = input;
-            if let Some((exp, sign)) = exp {
-                buffer.push(exp);
-                if let Some(sign) = sign {
-                    buffer.push(sign);
-                }
-                let ((), input) = try!(result_input.clone()
-                    .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
-                result_input = input;
+            input
+        } else {
+            result_input
+        };
+        let (exp, input) = try!(input.combine(|input| {
+            optional((char('e').or(char('E')), optional(char('-')))).parse_stream(input)
+        }));
+        result_input = input;
+        if let Some((exp, sign)) = exp {
+            buffer.push(exp);
+            if let Some(sign) = sign {
+                buffer.push(sign);
             }
+            let ((), input) = try!(result_input.clone()
+                .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+            result_input = input;
         }
         match buffer.parse() {
             Ok(f) => Ok((f, result_input)),
@@ -861,6 +865,16 @@ mod tests {
             .float()
             .parse("123.456E-10  ");
         assert_eq!(result, Ok((123.456E-10, "")));
+
+        let result = env()
+            .float()
+            .parse("123 ");
+        assert!(result.is_err());
+
+        let result = env()
+            .float()
+            .parse("123e1 ");
+        assert_eq!(result, Ok((123e1, "")));
     }
 
     #[test]
