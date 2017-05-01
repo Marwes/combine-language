@@ -5,8 +5,9 @@ This a crate providing an easy way of constructing parsers which can easily pars
 ```rust
 extern crate combine;
 extern crate combine_language;
-use combine::*;
-use combine_language::*;
+use combine::{satisfy, Parser};
+use combine::char::{alpha_num, letter, string};
+use combine_language::{Identifier, LanguageEnv, LanguageDef};
 fn main() {
     let env = LanguageEnv::new(LanguageDef {
         ident: Identifier {
