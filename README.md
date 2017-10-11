@@ -35,7 +35,7 @@ fn main() {
 
 ## Links
 
-[Documention](https://marwes.github.io/combine-language/combine_language/index.html)
+[Documentation](https://marwes.github.io/combine-language/combine_language/index.html)
 
 [combine](https://github.com/Marwes/combine)
 
