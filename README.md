@@ -28,7 +28,7 @@ fn main() {
     });
     let id = env.identifier();//An identifier parser
     let integer = env.integer();//An integer parser
-    let result = (id, integer).parse("this /* Skips comments */ 42");
+    let result = (id, integer).easy_parse("this /* Skips comments */ 42");
     assert_eq!(result, Ok(((String::from("this"), 42), "")));
 }
 ```
