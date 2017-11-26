@@ -1,4 +1,3 @@
-
 //! # Example
 //!
 //! ```
@@ -27,7 +26,7 @@
 //! });
 //! let id = env.identifier();//An identifier parser
 //! let integer = env.integer();//An integer parser
-//! let result = (id, integer).parse("this /* Skips comments */ 42");
+//! let result = (id, integer).easy_parse("this /* Skips comments */ 42");
 //! assert_eq!(result, Ok(((String::from("this"), 42), "")));
 //! # }
 //! ```
@@ -39,12 +38,12 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use combine::char::{char, digit, space, string, Str};
-use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Try, Token};
-use combine::primitives::{Consumed, Error, Stream};
+use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Token, Try};
+use combine::primitives::{Consumed, Stream, StreamError, StreamOnce, Tracked};
 use combine::primitives::FastResult::*;
-use combine::{any, between, char, env_parser, optional, look_ahead, many, not_followed_by, parser, satisfy,
-              skip_many, skip_many1, try, unexpected, Parser, ParseError, ConsumedResult,
-              ParseResult};
+use combine::{any, between, char, env_parser, look_ahead, many, not_followed_by, optional, parser,
+              satisfy, skip_many, try, unexpected, ConsumedResult, ParseError, ParseResult,
+              Parser, skip_many1};
 
 use combine::primitives::RangeStream;
 use combine::range::take;
@@ -53,17 +52,20 @@ pub type LanguageParser<'a: 'b, 'b, I: 'b, T> = Expected<EnvParser<&'b LanguageE
 pub type LexLanguageParser<'a: 'b, 'b, I: 'b, T> = Lex<'a, 'b, LanguageParser<'a, 'b, I, T>>;
 
 /// A lexing parser for a language
-#[derive(Clone)]
 pub struct Lex<'a: 'b, 'b, P>
-    where P: Parser,
-          P::Input: Stream<Item = char> + 'b
+where
+    P: Parser,
+    P::Input: Stream<Item = char> + 'b,
+    <P::Input as StreamOnce>::Error: ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
 {
     parser: Skip<P, WhiteSpace<'a, 'b, P::Input>>,
 }
 
 impl<'a, 'b, P> Parser for Lex<'a, 'b, P>
-    where P: Parser,
-          P::Input: Stream<Item = char> + 'b
+where
+    P: Parser,
+    P::Input: Stream<Item = char> + 'b,
+    <P::Input as StreamOnce>::Error: ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
 {
     type Input = P::Input;
     type Output = P::Output;
@@ -77,7 +79,7 @@ impl<'a, 'b, P> Parser for Lex<'a, 'b, P>
     fn parse_lazy(&mut self, input: P::Input) -> ConsumedResult<P::Output, P::Input> {
         self.parser.parse_lazy(input).into()
     }
-    fn add_error(&mut self, errors: &mut ParseError<P::Input>) {
+    fn add_error(&mut self, errors: &mut Tracked<<P::Input as StreamOnce>::Error>) {
         self.parser.add_error(errors);
     }
 }
@@ -85,13 +87,17 @@ impl<'a, 'b, P> Parser for Lex<'a, 'b, P>
 /// A whitespace parser for a language
 #[derive(Clone)]
 pub struct WhiteSpace<'a: 'b, 'b, I>
-    where I: Stream<Item = char> + 'b
+where
+    I: Stream<Item = char> + 'b,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     env: &'b LanguageEnv<'a, I>,
 }
 
 impl<'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
-    where I: Stream<Item = char> + 'b
+where
+    I: Stream<Item = char> + 'b,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     type Input = I;
     type Output = ();
@@ -99,20 +105,25 @@ impl<'a, 'b, I> Parser for WhiteSpace<'a, 'b, I>
         let mut comment_start = self.env.comment_start.borrow_mut();
         let mut comment_end = self.env.comment_end.borrow_mut();
         let mut comment_line = self.env.comment_line.borrow_mut();
-        parse_comment(&mut **comment_start,
-                      &mut **comment_end,
-                      &mut **comment_line,
-                      input)
+        parse_comment(
+            &mut **comment_start,
+            &mut **comment_end,
+            &mut **comment_line,
+            input,
+        )
     }
 }
 
-fn parse_comment<I, P>(mut comment_start: P,
-                       mut comment_end: P,
-                       comment_line: P,
-                       input: I)
-                       -> ParseResult<(), I>
-    where I: Stream<Item = char>,
-          P: Parser<Input = I, Output = ()>
+fn parse_comment<I, P>(
+    mut comment_start: P,
+    mut comment_end: P,
+    comment_line: P,
+    input: I,
+) -> ParseResult<(), I>
+where
+    I: Stream<Item = char>,
+    P: Parser<Input = I, Output = ()>,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     let linecomment: &mut (Parser<Input = I, Output = ()>) = &mut try(comment_line)
         .and(skip_many(satisfy(|c| c != '\n')))
@@ -120,14 +131,15 @@ fn parse_comment<I, P>(mut comment_start: P,
     let blockcomment = parser(|input| {
         let (_, mut input) = try!(try(&mut comment_start).parse_lazy(input).into());
         loop {
-            match input.clone().combine(|input| try(&mut comment_end).parse_lazy(input).into()) {
+            match input
+                .clone()
+                .combine(|input| try(&mut comment_end).parse_lazy(input).into())
+            {
                 Ok((_, input)) => return Ok(((), input)),
-                Err(_) => {
-                    match input.combine(|input| any().parse_stream(input)) {
-                        Ok((_, rest)) => input = rest,
-                        Err(err) => return Err(err),
-                    }
-                }
+                Err(_) => match input.combine(|input| any().parse_stream(input)) {
+                    Ok((_, rest)) => input = rest,
+                    Err(err) => return Err(err),
+                },
             }
         }
     });
@@ -138,13 +150,17 @@ fn parse_comment<I, P>(mut comment_start: P,
 
 /// Parses a reserved word
 pub struct Reserved<'a: 'b, 'b, I>
-    where I: Stream<Item = char> + 'b
+where
+    I: Stream<Item = char> + 'b,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     parser: Lex<'a, 'b, Try<Skip<Str<I>, NotFollowedBy<LanguageParser<'a, 'b, I, char>>>>>,
 }
 
 impl<'a, 'b, I> Parser for Reserved<'a, 'b, I>
-    where I: Stream<Item = char> + 'b
+where
+    I: Stream<Item = char> + 'b,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     type Input = I;
     type Output = &'static str;
@@ -160,22 +176,26 @@ impl<'a, 'b, I> Parser for Reserved<'a, 'b, I>
         self.parser.parse_lazy(input).into()
     }
 
-    fn add_error(&mut self, errors: &mut ParseError<I>) {
+    fn add_error(&mut self, errors: &mut Tracked<I::Error>) {
         self.parser.add_error(errors);
     }
 }
 
 /// Parses `P` between two delimiter characters
 pub struct BetweenChar<'a: 'b, 'b, P>
-    where P: Parser,
-          P::Input: Stream<Item = char> + 'b
+where
+    P: Parser,
+    P::Input: Stream<Item = char> + 'b,
+    <P::Input as StreamOnce>::Error: ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
 {
     parser: Between<Lex<'a, 'b, Token<P::Input>>, Lex<'a, 'b, Token<P::Input>>, P>,
 }
 
 impl<'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
-    where I: Stream<Item = char> + 'b,
-          P: Parser<Input = I>
+where
+    I: Stream<Item = char> + 'b,
+    P: Parser<Input = I>,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     type Input = I;
     type Output = P::Output;
@@ -191,15 +211,16 @@ impl<'a, 'b, I, P> Parser for BetweenChar<'a, 'b, P>
         self.parser.parse_lazy(input).into()
     }
 
-    fn add_error(&mut self, errors: &mut ParseError<I>) {
+    fn add_error(&mut self, errors: &mut Tracked<<P::Input as StreamOnce>::Error>) {
         self.parser.add_error(errors);
     }
 }
 
 /// Defines how to define an identifier (or operator)
 pub struct Identifier<PS, P>
-    where PS: Parser<Output = char>,
-          P: Parser<Input = PS::Input, Output = char>
+where
+    PS: Parser<Output = char>,
+    P: Parser<Input = PS::Input, Output = char>,
 {
     /// Parses a valid starting character for an identifier
     pub start: PS,
@@ -211,13 +232,14 @@ pub struct Identifier<PS, P>
 
 /// A struct type which contains the necessary definitions to construct a language parser
 pub struct LanguageDef<IS, I, OS, O, CL, CS, CE>
-    where I: Parser<Output = char>,
-          IS: Parser<Input = I::Input, Output = char>,
-          O: Parser<Input = I::Input, Output = char>,
-          OS: Parser<Input = I::Input, Output = char>,
-          CL: Parser<Input = I::Input, Output = ()>,
-          CS: Parser<Input = I::Input, Output = ()>,
-          CE: Parser<Input = I::Input, Output = ()>
+where
+    I: Parser<Output = char>,
+    IS: Parser<Input = I::Input, Output = char>,
+    O: Parser<Input = I::Input, Output = char>,
+    OS: Parser<Input = I::Input, Output = char>,
+    CL: Parser<Input = I::Input, Output = ()>,
+    CS: Parser<Input = I::Input, Output = ()>,
+    CE: Parser<Input = I::Input, Output = ()>,
 {
     /// How to parse an identifier
     pub ident: Identifier<IS, I>,
@@ -231,8 +253,10 @@ pub struct LanguageDef<IS, I, OS, O, CL, CS, CE>
     pub comment_end: CE,
 }
 
-type IdentParser<'a, I> = (Box<Parser<Input = I, Output = char> + 'a>,
-                           Box<Parser<Input = I, Output = char> + 'a>);
+type IdentParser<'a, I> = (
+    Box<Parser<Input = I, Output = char> + 'a>,
+    Box<Parser<Input = I, Output = char> + 'a>,
+);
 
 /// A type containing parsers for a specific language.
 /// For some parsers there are two version where the parser which ends with a `_` is a variant
@@ -251,24 +275,37 @@ pub struct LanguageEnv<'a, I> {
 }
 
 impl<'a, I> LanguageEnv<'a, I>
-    where I: Stream<Item = char>
+where
+    I: Stream<Item = char>,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     /// Constructs a new parser from a language defintion
     pub fn new<A, B, C, D, E, F, G>(def: LanguageDef<A, B, C, D, E, F, G>) -> LanguageEnv<'a, I>
-        where A: Parser<Input = I, Output = char> + 'a,
-              B: Parser<Input = I, Output = char> + 'a,
-              C: Parser<Input = I, Output = char> + 'a,
-              D: Parser<Input = I, Output = char> + 'a,
-              E: Parser<Input = I, Output = ()> + 'a,
-              F: Parser<Input = I, Output = ()> + 'a,
-              G: Parser<Input = I, Output = ()> + 'a
+    where
+        A: Parser<Input = I, Output = char> + 'a,
+        B: Parser<Input = I, Output = char> + 'a,
+        C: Parser<Input = I, Output = char> + 'a,
+        D: Parser<Input = I, Output = char> + 'a,
+        E: Parser<Input = I, Output = ()> + 'a,
+        F: Parser<Input = I, Output = ()> + 'a,
+        G: Parser<Input = I, Output = ()> + 'a,
     {
         let LanguageDef {
-            ident: Identifier { start: ident_start, rest: ident_rest, reserved: ident_reserved },
-            op: Identifier { start: op_start, rest: op_rest, reserved: op_reserved },
+            ident:
+                Identifier {
+                    start: ident_start,
+                    rest: ident_rest,
+                    reserved: ident_reserved,
+                },
+            op:
+                Identifier {
+                    start: op_start,
+                    rest: op_rest,
+                    reserved: op_reserved,
+                },
             comment_line,
             comment_start,
-            comment_end
+            comment_end,
         } = def;
         LanguageEnv {
             ident: RefCell::new((Box::new(ident_start), Box::new(ident_rest))),
@@ -283,18 +320,22 @@ impl<'a, I> LanguageEnv<'a, I>
         }
     }
 
-    fn parser<'b, T>(&'b self,
-                     parser: fn(&LanguageEnv<'a, I>, I) -> ParseResult<T, I>,
-                     expected: &'static str)
-                     -> LanguageParser<'a, 'b, I, T> {
+    fn parser<'b, T>(
+        &'b self,
+        parser: fn(&LanguageEnv<'a, I>, I) -> ParseResult<T, I>,
+        expected: &'static str,
+    ) -> LanguageParser<'a, 'b, I, T> {
         env_parser(self, parser).expected(expected)
     }
 
     /// Creates a lexing parser from `p`
     pub fn lex<'b, P>(&'b self, p: P) -> Lex<'a, 'b, P>
-        where P: Parser<Input = I> + 'b
+    where
+        P: Parser<Input = I> + 'b,
     {
-        Lex { parser: p.skip(self.white_space()) }
+        Lex {
+            parser: p.skip(self.white_space()),
+        }
     }
 
     /// Skips spaces and comments
@@ -326,60 +367,65 @@ impl<'a, I> LanguageEnv<'a, I>
         // We definitely consumed the char `first` so make sure that the input is consumed
         let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
         match self.reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => {
-                Err(input.map(|input| {
-                    ParseError::new(input.position(), Error::Expected("identifier".into()))
-                }))
-            }
+            Some(ref _reserved) => Err(input.map(|input| {
+                I::Error::from_error(
+                    input.position(),
+                    StreamError::expected_static_message("identifier"),
+                ).into()
+            })),
             None => Ok((s, input)),
         }
     }
 
     /// Parses an identifier, failing if it parses something that is a reserved identifier
     pub fn range_identifier<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, &'a str>
-        where I: RangeStream<Range = &'a str>
+    where
+        I: RangeStream<Range = &'a str>,
     {
         self.lex(self.range_identifier_())
     }
 
     pub fn range_identifier_<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
-        where I: RangeStream<Range = &'a str>
+    where
+        I: RangeStream<Range = &'a str>,
     {
         self.parser(LanguageEnv::<I>::parse_range_ident, "identifier")
     }
 
     fn parse_range_ident(&self, input: I) -> ParseResult<&'a str, I>
-        where I: RangeStream<Range = &'a str>
+    where
+        I: RangeStream<Range = &'a str>,
     {
         let mut ident = self.ident.borrow_mut();
         let (first, rest) = try!(ident.0.parse_lazy(input.clone()).into());
         let mut iter = (&mut *ident.1).iter(rest.into_inner());
-        let len = iter.by_ref().fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
+        let len = iter.by_ref()
+            .fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
         let (s, input) = try!(take(len).parse_lazy(input).into());
         match self.reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => {
-                Err(input.map(|input| {
-                    ParseError::new(input.position(), Error::Expected("identifier".into()))
-                }))
-            }
+            Some(ref _reserved) => Err(input.map(|input| {
+                I::Error::from_error(
+                    input.position(),
+                    StreamError::expected_static_message("identifier"),
+                ).into()
+            })),
             None => Ok((s, input)),
         }
     }
 
     /// Parses the reserved identifier `name`
     pub fn reserved<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
-        where I::Range: 'b
+    where
+        I::Range: 'b,
     {
         let ident_letter = self.parser(LanguageEnv::<I>::ident_letter, "identifier letter");
-        Reserved { parser: self.lex(try(string(name).skip(not_followed_by(ident_letter)))) }
+        Reserved {
+            parser: self.lex(try(string(name).skip(not_followed_by(ident_letter)))),
+        }
     }
 
     fn ident_letter(&self, input: I) -> ParseResult<char, I> {
-        self.ident
-            .borrow_mut()
-            .1
-            .parse_lazy(input)
-            .into()
+        self.ident.borrow_mut().1.parse_lazy(input).into()
     }
 
     /// Parses an operator, failing if it parses something that is a reserved operator
@@ -401,66 +447,72 @@ impl<'a, I> LanguageEnv<'a, I>
         // We definitely consumed the char `first` so make sure that the input is consumed
         let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
         match self.op_reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => {
-                Err(input.map(|input| {
-                    ParseError::new(input.position(), Error::Expected("operator".into()))
-                }))
-            }
+            Some(ref _reserved) => Err(input.map(|input| {
+                I::Error::from_error(
+                    input.position(),
+                    StreamError::expected_static_message("operator"),
+                ).into()
+            })),
             None => Ok((s, input)),
         }
     }
 
     /// Parses an identifier, failing if it parses something that is a reserved identifier
     pub fn range_op<'b>(&'b self) -> LexLanguageParser<'a, 'b, I, &'a str>
-        where I: RangeStream<Range = &'a str>
+    where
+        I: RangeStream<Range = &'a str>,
     {
         self.lex(self.range_op_())
     }
 
     pub fn range_op_<'b>(&'b self) -> LanguageParser<'a, 'b, I, &'a str>
-        where I: RangeStream<Range = &'a str>
+    where
+        I: RangeStream<Range = &'a str>,
     {
         self.parser(LanguageEnv::<I>::parse_range_op, "operator")
     }
 
     fn parse_range_op(&self, input: I) -> ParseResult<&'a str, I>
-        where I: RangeStream<Range = &'a str>
+    where
+        I: RangeStream<Range = &'a str>,
     {
         let mut op = self.op.borrow_mut();
         let (first, rest) = try!(op.0.parse_lazy(input.clone()).into());
         let mut iter = (&mut *op.1).iter(rest.into_inner());
-        let len = iter.by_ref().fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
+        let len = iter.by_ref()
+            .fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
         let (s, input) = try!(take(len).parse_lazy(input).into());
         match self.op_reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => {
-                Err(input.map(|input| {
-                    ParseError::new(input.position(), Error::Expected("identifier".into()))
-                }))
-            }
+            Some(ref _reserved) => Err(input.map(|input| {
+                I::Error::from_error(
+                    input.position(),
+                    StreamError::expected_static_message("identifier"),
+                ).into()
+            })),
             None => Ok((s, input)),
         }
     }
 
     /// Parses the reserved operator `name`
     pub fn reserved_op<'b>(&'b self, name: &'static str) -> Lex<'a, 'b, Reserved<'a, 'b, I>>
-        where I::Range: 'b
+    where
+        I::Range: 'b,
     {
         self.lex(self.reserved_op_(name))
     }
 
     pub fn reserved_op_<'b>(&'b self, name: &'static str) -> Reserved<'a, 'b, I>
-        where I::Range: 'b
+    where
+        I::Range: 'b,
     {
         let op_letter = self.parser(LanguageEnv::<I>::op_letter, "operator letter");
-        Reserved { parser: self.lex(try(string(name).skip(not_followed_by(op_letter)))) }
+        Reserved {
+            parser: self.lex(try(string(name).skip(not_followed_by(op_letter)))),
+        }
     }
 
     fn op_letter(&self, input: I) -> ParseResult<char, I> {
-        self.op
-            .borrow_mut()
-            .1
-            .parse_lazy(input)
-            .into()
+        self.op.borrow_mut().1.parse_lazy(input).into()
     }
 
     /// Parses a character literal taking escape sequences into account
@@ -481,11 +533,13 @@ impl<'a, I> LanguageEnv<'a, I>
 
     fn char(input: I) -> ParseResult<char, I> {
         let (c, input) = try!(any().parse_lazy(input).into());
-        let mut back_slash_char = satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some())
-            .map(escape_char);
+        let mut back_slash_char =
+            satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_stream(input)),
-            '\'' => unexpected("'").parse_stream(input.into_inner()).map(|_| unreachable!()),
+            '\'' => unexpected("'")
+                .parse_stream(input.into_inner())
+                .map(|_| unreachable!()),
             _ => Ok((c, input)),
         }
     }
@@ -500,20 +554,23 @@ impl<'a, I> LanguageEnv<'a, I>
     }
 
     fn string_literal_parser(&self, input: I) -> ParseResult<String, I> {
-        between(string("\""),
-                string("\""),
-                many(parser(LanguageEnv::<I>::string_char)))
-            .parse_lazy(input)
+        between(
+            string("\""),
+            string("\""),
+            many(parser(LanguageEnv::<I>::string_char)),
+        ).parse_lazy(input)
             .into()
     }
 
     fn string_char(input: I) -> ParseResult<char, I> {
         let (c, input) = try!(any().parse_lazy(input).into());
-        let mut back_slash_char = satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some())
-            .map(escape_char);
+        let mut back_slash_char =
+            satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
             '\\' => input.combine(|input| back_slash_char.parse_stream(input)),
-            '"' => unexpected("\"").parse_stream(input.into_inner()).map(|_| unreachable!()),
+            '"' => unexpected("\"")
+                .parse_stream(input.into_inner())
+                .map(|_| unreachable!()),
             _ => Ok((c, input)),
         }
     }
@@ -521,8 +578,9 @@ impl<'a, I> LanguageEnv<'a, I>
     /// Parses `p` inside angle brackets
     /// `< p >`
     pub fn angles<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input = I>,
-              I::Range: 'b
+    where
+        P: Parser<Input = I>,
+        I::Range: 'b,
     {
         self.between('<', '>', parser)
     }
@@ -530,8 +588,9 @@ impl<'a, I> LanguageEnv<'a, I>
     /// Parses `p` inside braces
     /// `{ p }`
     pub fn braces<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input = I>,
-              I::Range: 'b
+    where
+        P: Parser<Input = I>,
+        I::Range: 'b,
     {
         self.between('{', '}', parser)
     }
@@ -539,8 +598,9 @@ impl<'a, I> LanguageEnv<'a, I>
     /// Parses `p` inside brackets
     /// `[ p ]`
     pub fn brackets<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input = I>,
-              I::Range: 'b
+    where
+        P: Parser<Input = I>,
+        I::Range: 'b,
     {
         self.between('[', ']', parser)
     }
@@ -548,17 +608,21 @@ impl<'a, I> LanguageEnv<'a, I>
     /// Parses `p` inside parentheses
     /// `( p )`
     pub fn parens<'b, P>(&'b self, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input = I>,
-              I::Range: 'b
+    where
+        P: Parser<Input = I>,
+        I::Range: 'b,
     {
         self.between('(', ')', parser)
     }
 
     fn between<'b, P>(&'b self, start: char, end: char, parser: P) -> BetweenChar<'a, 'b, P>
-        where P: Parser<Input = I>,
-              I::Range: 'b
+    where
+        P: Parser<Input = I>,
+        I::Range: 'b,
     {
-        BetweenChar { parser: between(self.lex(char(start)), self.lex(char(end)), parser) }
+        BetweenChar {
+            parser: between(self.lex(char(start)), self.lex(char(end)), parser),
+        }
     }
 
     /// Parses an integer
@@ -576,7 +640,7 @@ impl<'a, I> LanguageEnv<'a, I>
         let ((), input) = try!(LanguageEnv::push_digits(&mut buffer, input));
         match buffer.parse() {
             Ok(i) => Ok((i, input)),
-            Err(_) => Err(input.map(|input| ParseError::empty(input.position()))),
+            Err(_) => Err(input.map(|input| I::Error::empty(input.position()).into())),
         }
     }
 
@@ -604,14 +668,21 @@ impl<'a, I> LanguageEnv<'a, I>
             buffer.push(sign);
         }
         let ((), input) = try!(input.combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
-        let (_, input) = try!(input.combine(|input| look_ahead(char('e').or(char('E')).or(char('.'))).parse_lazy(input).into()));
+        let (_, input) = try!(input.combine(|input| {
+            look_ahead(char('e').or(char('E')).or(char('.')))
+                .parse_lazy(input)
+                .into()
+        }));
 
         let (dot, mut result_input) =
             try!(input.combine(|input| optional(char('.')).parse_lazy(input).into()));
         let input = if let Some(dot) = dot {
             buffer.push(dot);
-            let ((), input) = try!(result_input.clone()
-                .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+            let ((), input) = try!(
+                result_input
+                    .clone()
+                    .combine(|input| LanguageEnv::push_digits(&mut buffer, input))
+            );
             input
         } else {
             result_input
@@ -625,13 +696,16 @@ impl<'a, I> LanguageEnv<'a, I>
             if let Some(sign) = sign {
                 buffer.push(sign);
             }
-            let ((), input) = try!(result_input.clone()
-                .combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
+            let ((), input) = try!(
+                result_input
+                    .clone()
+                    .combine(|input| LanguageEnv::push_digits(&mut buffer, input))
+            );
             result_input = input;
         }
         match buffer.parse() {
             Ok(f) => Ok((f, result_input)),
-            Err(_) => Err(result_input.map(|input| ParseError::empty(input.position()))),
+            Err(_) => Err(result_input.map(|input| I::Error::empty(input.position()).into())),
         }
     }
 }
@@ -647,7 +721,7 @@ fn escape_char(c: char) -> char {
         'n' => '\n',
         'r' => '\r',
         't' => '\t',
-        c => c,//Should never happen
+        c => c, //Should never happen
     }
 }
 
@@ -683,22 +757,23 @@ macro_rules! tryb {
             EmptyOk((x, input)) => (x, Consumed::Empty(input)),
             ConsumedOk((x, input)) => (x, Consumed::Consumed(input)),
             EmptyErr(_) => break,
-            ConsumedErr(err) => return Err(Consumed::Consumed(err)),
+            ConsumedErr(err) => return Err(Consumed::Consumed(err.into())),
         }
     }
 }
 
 impl<O, P, F, T> Expression<O, P, F>
-    where O: Parser<Output = (T, Assoc)>,
-          P: Parser<Input = O::Input>,
-          F: Fn(P::Output, T, P::Output) -> P::Output
+where
+    O: Parser<Output = (T, Assoc)>,
+    P: Parser<Input = O::Input>,
+    F: Fn(P::Output, T, P::Output) -> P::Output,
 {
-    fn parse_expr(&mut self,
-                  min_precedence: i32,
-                  mut l: P::Output,
-                  mut input: Consumed<P::Input>)
-                  -> ParseResult<P::Output, P::Input> {
-
+    fn parse_expr(
+        &mut self,
+        min_precedence: i32,
+        mut l: P::Output,
+        mut input: Consumed<P::Input>,
+    ) -> ParseResult<P::Output, P::Input> {
         loop {
             let ((op, op_assoc), rest) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
             if op_assoc.precedence < min_precedence {
@@ -708,9 +783,8 @@ impl<O, P, F, T> Expression<O, P, F>
             input = rest;
             loop {
                 let ((_, assoc), _) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
-                let proceed = assoc.precedence > op_assoc.precedence ||
-                              assoc.fixity == Fixity::Right &&
-                              assoc.precedence == op_assoc.precedence;
+                let proceed = assoc.precedence > op_assoc.precedence
+                    || assoc.fixity == Fixity::Right && assoc.precedence == op_assoc.precedence;
                 if !proceed {
                     break;
                 }
@@ -725,9 +799,10 @@ impl<O, P, F, T> Expression<O, P, F>
 }
 
 impl<O, P, F, T> Parser for Expression<O, P, F>
-    where O: Parser<Output = (T, Assoc)>,
-          P: Parser<Input = O::Input>,
-          F: Fn(P::Output, T, P::Output) -> P::Output
+where
+    O: Parser<Output = (T, Assoc)>,
+    P: Parser<Input = O::Input>,
+    F: Fn(P::Output, T, P::Output) -> P::Output,
 {
     type Input = P::Input;
     type Output = P::Output;
@@ -736,7 +811,7 @@ impl<O, P, F, T> Parser for Expression<O, P, F>
         let (l, input) = ctry!(self.term.parse_lazy(input).into());
         self.parse_expr(0, l, input).into()
     }
-    fn add_error(&mut self, errors: &mut ParseError<P::Input>) {
+    fn add_error(&mut self, errors: &mut Tracked<<P::Input as StreamOnce>::Error>) {
         self.term.add_error(errors);
     }
 }
@@ -777,14 +852,15 @@ impl<O, P, F, T> Parser for Expression<O, P, F>
 ///     .map(Id)
 ///     .skip(spaces());
 /// let mut parser = expression_parser(term, op_parser, op);
-/// let result = parser.parse("a + b * c + d");
+/// let result = parser.easy_parse("a + b * c + d");
 /// assert_eq!(result, Ok((op(op(id("a"), "+", op(id("b"), "*", id("c"))), "+", id("d")), "")));
 /// # }
 /// ```
 pub fn expression_parser<O, P, F, T>(term: P, op: O, f: F) -> Expression<O, P, F>
-    where O: Parser<Output = (T, Assoc)>,
-          P: Parser<Input = O::Input>,
-          F: Fn(P::Output, T, P::Output) -> P::Output
+where
+    O: Parser<Output = (T, Assoc)>,
+    P: Parser<Input = O::Input>,
+    F: Fn(P::Output, T, P::Output) -> P::Output,
 {
     Expression {
         term: term,
@@ -798,9 +874,13 @@ mod tests {
     use super::*;
     use combine::*;
     use combine::char::{alpha_num, letter, string};
-    use combine::primitives::Error;
+    use combine::easy::Error;
 
-    fn env() -> LanguageEnv<'static, &'static str> {
+    fn env<I>() -> LanguageEnv<'static, I>
+    where
+        I: Stream<Item = char> + 'static,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+    {
         LanguageEnv::new(LanguageDef {
             ident: Identifier {
                 start: letter(),
@@ -823,9 +903,7 @@ mod tests {
 
     #[test]
     fn string_literal() {
-        let result = env()
-            .string_literal()
-            .parse(r#""abc\n\r213" "#);
+        let result = env().string_literal().easy_parse(r#""abc\n\r213" "#);
         assert_eq!(result, Ok(("abc\n\r213".to_string(), "")));
     }
 
@@ -833,71 +911,57 @@ mod tests {
     fn char_literal() {
         let e = env();
         let mut parser = e.char_literal();
-        assert_eq!(parser.parse("'a'"), Ok(('a', "")));
-        assert_eq!(parser.parse(r#"'\n'"#), Ok(('\n', "")));
-        assert_eq!(parser.parse(r#"'\\'"#), Ok(('\\', "")));
-        assert!(parser.parse(r#"'\1'"#).is_err());
-        assert_eq!(parser.parse(r#"'"'"#), Ok(('"', "")));
-        assert!(parser.parse(r#"'\"'"#).is_err());
+        assert_eq!(parser.easy_parse("'a'"), Ok(('a', "")));
+        assert_eq!(parser.easy_parse(r#"'\n'"#), Ok(('\n', "")));
+        assert_eq!(parser.easy_parse(r#"'\\'"#), Ok(('\\', "")));
+        assert!(parser.easy_parse(r#"'\1'"#).is_err());
+        assert_eq!(parser.easy_parse(r#"'"'"#), Ok(('"', "")));
+        assert!(parser.easy_parse(r#"'\"'"#).is_err());
     }
 
     #[test]
     fn integer_literal() {
-        let result = env()
-            .integer()
-            .parse("213  ");
+        let result = env().integer().easy_parse("213  ");
         assert_eq!(result, Ok((213, "")));
     }
 
     #[test]
     fn float_literal() {
-        let result = env()
-            .float()
-            .parse("123.456  ");
+        let result = env().float().easy_parse("123.456  ");
         assert_eq!(result, Ok((123.456, "")));
 
-        let result = env()
-            .float()
-            .parse("123.456e10  ");
+        let result = env().float().easy_parse("123.456e10  ");
         assert_eq!(result, Ok((123.456e10, "")));
 
-        let result = env()
-            .float()
-            .parse("123.456E-10  ");
+        let result = env().float().easy_parse("123.456E-10  ");
         assert_eq!(result, Ok((123.456E-10, "")));
 
-        let result = env()
-            .float()
-            .parse("123 ");
+        let result = env().float().easy_parse("123 ");
         assert!(result.is_err());
 
-        let result = env()
-            .float()
-            .parse("123e1 ");
+        let result = env().float().easy_parse("123e1 ");
         assert_eq!(result, Ok((123e1, "")));
     }
 
     #[test]
     fn identifier() {
         let e = env();
-        let result = e.identifier()
-            .parse("a12bc");
+        let result = e.identifier().easy_parse("a12bc");
         assert_eq!(result, Ok(("a12bc".to_string(), "")));
-        assert!(e.identifier().parse("1bcv").is_err());
-        assert!(e.identifier().parse("if").is_err());
-        assert_eq!(e.reserved("if").parse("if"), Ok(("if", "")));
-        assert!(e.reserved("if").parse("ifx").is_err());
+        assert!(e.identifier().easy_parse("1bcv").is_err());
+        assert!(e.identifier().easy_parse("if").is_err());
+        assert_eq!(e.reserved("if").easy_parse("if"), Ok(("if", "")));
+        assert!(e.reserved("if").easy_parse("ifx").is_err());
     }
 
     #[test]
     fn operator() {
         let e = env();
-        let result = e.op()
-            .parse("++  ");
+        let result = e.op().easy_parse("++  ");
         assert_eq!(result, Ok(("++".to_string(), "")));
-        assert!(e.identifier().parse("+").is_err());
-        assert_eq!(e.reserved_op("-").parse("-       "), Ok(("-", "")));
-        assert!(e.reserved_op("-").parse("--       ").is_err());
+        assert!(e.identifier().easy_parse("+").is_err());
+        assert_eq!(e.reserved_op("-").easy_parse("-       "), Ok(("-", "")));
+        assert!(e.reserved_op("-").easy_parse("--       ").is_err());
     }
 
     use self::Expr::*;
@@ -915,16 +979,25 @@ mod tests {
     fn test_expr1() -> (&'static str, Expr) {
         let mul_2_3 = op(Int(2), "*", Int(3));
         let div_4_5 = op(Int(4), "/", Int(5));
-        ("1 + 2 * 3 - 4 / 5", op(op(Int(1), "+", mul_2_3), "-", div_4_5))
+        (
+            "1 + 2 * 3 - 4 / 5",
+            op(op(Int(1), "+", mul_2_3), "-", div_4_5),
+        )
     }
     fn test_expr2() -> (&'static str, Expr) {
         let mul_2_3_4 = op(op(Int(2), "*", Int(3)), "/", Int(4));
         let add_1_mul = op(Int(1), "+", mul_2_3_4);
-        ("1 + 2 * 3 / 4 - 5 + 6", op(op(add_1_mul, "-", Int(5)), "+", Int(6)))
+        (
+            "1 + 2 * 3 / 4 - 5 + 6",
+            op(op(add_1_mul, "-", Int(5)), "+", Int(6)),
+        )
     }
 
 
-    fn op_parser(input: &'static str) -> ParseResult<(&'static str, Assoc), &'static str> {
+    parser!{
+    fn op_parser[I]()(I) -> (&'static str, Assoc)
+        where [I: Stream<Item = char>,]
+    {
         let mut ops = ["*", "/", "+", "-", "^", "&&", "||", "!!"]
             .iter()
             .cloned()
@@ -946,36 +1019,38 @@ mod tests {
                     "^" | "&&" | "||" => Fixity::Right,
                     _ => panic!("Impossible"),
                 };
-                (s,
-                 Assoc {
-                    fixity: fixity,
-                    precedence: prec,
-                })
+                (
+                    s,
+                    Assoc {
+                        fixity: fixity,
+                        precedence: prec,
+                    },
+                )
             })
-            .parse_stream(input)
+    }
     }
 
     #[test]
     fn expression() {
         let e = env();
-        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
+        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(op_parser()), op);
         let (s1, e1) = test_expr1();
-        let result = expr.parse(s1);
+        let result = expr.easy_parse(s1);
         assert_eq!(result, Ok((e1, "")));
         let (s2, e2) = test_expr2();
-        let result = expr.parse(s2);
+        let result = expr.easy_parse(s2);
         assert_eq!(result, Ok((e2, "")));
     }
     #[test]
     fn right_assoc_expression() {
         let e = env();
-        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
-        let result = expr.parse("1 + 2 * 3 ^ 4 / 5");
+        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(op_parser()), op);
+        let result = expr.easy_parse("1 + 2 * 3 ^ 4 / 5");
         let power_3_4 = op(Int(3), "^", Int(4));
         let mul_2_3_5 = op(op(Int(2), "*", power_3_4), "/", Int(5));
         let add_1_mul = op(Int(1), "+", mul_2_3_5);
         assert_eq!(result, Ok((add_1_mul, "")));
-        let result = expr.parse("1 ^ 2 && 3 ^ 4");
+        let result = expr.easy_parse("1 ^ 2 && 3 ^ 4");
         let e_1_2 = op(Int(1), "^", Int(2));
         let e_3_4 = op(Int(3), "^", Int(4));
         assert_eq!(result, Ok((op(e_1_2, "&&", e_3_4), "")));
@@ -983,28 +1058,43 @@ mod tests {
     #[test]
     fn expression_error() {
         let e = env();
-        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(parser(op_parser)), op);
-        let errors = expr.parse("+ 1").map_err(|err| err.errors);
-        assert_eq!(errors,
-                   Err(vec![Error::Unexpected('+'.into()), Error::Expected("integer".into())]));
+        let mut expr = expression_parser(e.integer().map(Expr::Int), e.lex(op_parser()), op);
+        let errors = expr.easy_parse("+ 1").map_err(|err| err.errors);
+        assert_eq!(
+            errors,
+            Err(vec![
+                Error::Unexpected('+'.into()),
+                Error::Expected("integer".into()),
+            ])
+        );
     }
 
     #[test]
     fn range_identifier() {
         let e = env();
         let mut id = e.range_identifier();
-        assert_eq!(id.parse("t"), Ok(("t", "")));
-        assert_eq!(id.parse("test123 123"), Ok(("test123", "123")));
-        assert_eq!(id.parse("123").map_err(|err| err.errors),
-                   Err(vec![Error::Unexpected('1'.into()), Error::Expected("identifier".into())]));
+        assert_eq!(id.easy_parse("t"), Ok(("t", "")));
+        assert_eq!(id.easy_parse("test123 123"), Ok(("test123", "123")));
+        assert_eq!(
+            id.easy_parse("123").map_err(|err| err.errors),
+            Err(vec![
+                Error::Unexpected('1'.into()),
+                Error::Expected("identifier".into()),
+            ])
+        );
     }
 
     #[test]
     fn range_operator() {
         let e = env();
         let mut id = e.range_op();
-        assert_eq!(id.parse("+-+ 123"), Ok(("+-+", "123")));
-        assert_eq!(id.parse("abc").map_err(|err| err.errors),
-                   Err(vec![Error::Unexpected('a'.into()), Error::Expected("operator".into())]));
+        assert_eq!(id.easy_parse("+-+ 123"), Ok(("+-+", "123")));
+        assert_eq!(
+            id.easy_parse("abc").map_err(|err| err.errors),
+            Err(vec![
+                Error::Unexpected('a'.into()),
+                Error::Expected("operator".into()),
+            ])
+        );
     }
 }
