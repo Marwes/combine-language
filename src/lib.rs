@@ -34,29 +34,36 @@
 #[macro_use]
 extern crate combine;
 
+use combine::char::{char, digit, space, string, Str};
+use combine::error::FastResult::*;
+use combine::error::{Consumed, StreamError, Tracked};
+use combine::parser::combinator::{no_partial, recognize, NotFollowedBy, Try};
+use combine::parser::error::Expected;
+use combine::parser::function::EnvParser;
+use combine::parser::item::Token;
+use combine::parser::sequence::{Between, Skip};
+use combine::stream::{RangeStream, Resetable, Stream, StreamOnce};
+use combine::{
+    any, between, char, env_parser, from_str, many, not_followed_by, one_of, optional, parser,
+    satisfy, skip_many, skip_many1, token, try, unexpected, ConsumedResult, ParseError,
+    ParseResult, Parser,
+};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::borrow::Cow;
-use combine::char::{char, digit, space, string, Str};
-use combine::combinator::{Between, EnvParser, Expected, NotFollowedBy, Skip, Token, Try};
-use combine::primitives::{Consumed, Stream, StreamError, StreamOnce, Tracked};
-use combine::primitives::FastResult::*;
-use combine::{any, between, char, env_parser, look_ahead, many, not_followed_by, optional, parser,
-              satisfy, skip_many, try, unexpected, ConsumedResult, ParseError, ParseResult,
-              Parser, skip_many1};
 
-use combine::primitives::RangeStream;
 use combine::range::take;
 
-pub type LanguageParser<'a: 'b, 'b, I: 'b, T> = Expected<EnvParser<&'b LanguageEnv<'a, I>, I, T>>;
-pub type LexLanguageParser<'a: 'b, 'b, I: 'b, T> = Lex<'a, 'b, LanguageParser<'a, 'b, I, T>>;
+pub type LanguageParser<'a, 'b, I, T> = Expected<EnvParser<&'b LanguageEnv<'a, I>, I, T>>;
+pub type LexLanguageParser<'a, 'b, I, T> = Lex<'a, 'b, LanguageParser<'a, 'b, I, T>>;
 
 /// A lexing parser for a language
 pub struct Lex<'a: 'b, 'b, P>
 where
     P: Parser,
     P::Input: Stream<Item = char> + 'b,
-    <P::Input as StreamOnce>::Error: ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
+    <P::Input as StreamOnce>::Error:
+        ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
 {
     parser: Skip<P, WhiteSpace<'a, 'b, P::Input>>,
 }
@@ -65,18 +72,23 @@ impl<'a, 'b, P> Parser for Lex<'a, 'b, P>
 where
     P: Parser,
     P::Input: Stream<Item = char> + 'b,
-    <P::Input as StreamOnce>::Error: ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
+    <P::Input as StreamOnce>::Error:
+        ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
 {
     type Input = P::Input;
     type Output = P::Output;
+    type PartialState = ();
 
-    fn parse_stream(&mut self, input: P::Input) -> ParseResult<P::Output, P::Input> {
+    fn parse_stream(&mut self, input: &mut P::Input) -> ParseResult<P::Output, P::Input> {
         self.parser.parse_stream(input)
     }
-    fn parse_stream_consumed(&mut self, input: P::Input) -> ConsumedResult<P::Output, P::Input> {
+    fn parse_stream_consumed(
+        &mut self,
+        input: &mut P::Input,
+    ) -> ConsumedResult<P::Output, P::Input> {
         self.parser.parse_stream_consumed(input)
     }
-    fn parse_lazy(&mut self, input: P::Input) -> ConsumedResult<P::Output, P::Input> {
+    fn parse_lazy(&mut self, input: &mut P::Input) -> ConsumedResult<P::Output, P::Input> {
         self.parser.parse_lazy(input).into()
     }
     fn add_error(&mut self, errors: &mut Tracked<<P::Input as StreamOnce>::Error>) {
@@ -101,7 +113,9 @@ where
 {
     type Input = I;
     type Output = ();
-    fn parse_stream(&mut self, input: I) -> ParseResult<(), I> {
+    type PartialState = ();
+
+    fn parse_lazy(&mut self, input: &mut I) -> ConsumedResult<(), I> {
         let mut comment_start = self.env.comment_start.borrow_mut();
         let mut comment_end = self.env.comment_end.borrow_mut();
         let mut comment_line = self.env.comment_line.borrow_mut();
@@ -110,7 +124,7 @@ where
             &mut **comment_end,
             &mut **comment_line,
             input,
-        )
+        ).into()
     }
 }
 
@@ -118,26 +132,24 @@ fn parse_comment<I, P>(
     mut comment_start: P,
     mut comment_end: P,
     comment_line: P,
-    input: I,
+    input: &mut I,
 ) -> ParseResult<(), I>
 where
     I: Stream<Item = char>,
     P: Parser<Input = I, Output = ()>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    let linecomment: &mut (Parser<Input = I, Output = ()>) = &mut try(comment_line)
-        .and(skip_many(satisfy(|c| c != '\n')))
-        .map(|_| ());
+    let linecomment: &mut (Parser<Input = I, Output = (), PartialState = _>) =
+        &mut try(comment_line)
+            .and(skip_many(satisfy(|c| c != '\n')))
+            .map(|_| ());
     let blockcomment = parser(|input| {
-        let (_, mut input) = try!(try(&mut comment_start).parse_lazy(input).into());
+        let (_, mut consumed) = try!(try(&mut comment_start).parse_lazy(input).into());
         loop {
-            match input
-                .clone()
-                .combine(|input| try(&mut comment_end).parse_lazy(input).into())
-            {
-                Ok((_, input)) => return Ok(((), input)),
-                Err(_) => match input.combine(|input| any().parse_stream(input)) {
-                    Ok((_, rest)) => input = rest,
+            match consumed.combine(|_| try(&mut comment_end).parse_lazy(input).into()) {
+                Ok((_, consumed)) => return Ok(((), consumed)),
+                Err(_) => match consumed.combine(|_| any().parse_stream(input)) {
+                    Ok((_, rest)) => consumed = rest,
                     Err(err) => return Err(err),
                 },
             }
@@ -146,7 +158,6 @@ where
     let whitespace = skip_many1(space()).or(linecomment).or(blockcomment);
     skip_many(whitespace).parse_stream(input)
 }
-
 
 /// Parses a reserved word
 pub struct Reserved<'a: 'b, 'b, I>
@@ -164,15 +175,17 @@ where
 {
     type Input = I;
     type Output = &'static str;
-    fn parse_stream(&mut self, input: I) -> ParseResult<&'static str, I> {
+    type PartialState = ();
+
+    fn parse_stream(&mut self, input: &mut I) -> ParseResult<&'static str, I> {
         self.parser.parse_stream(input)
     }
 
-    fn parse_stream_consumed(&mut self, input: I) -> ConsumedResult<&'static str, I> {
+    fn parse_stream_consumed(&mut self, input: &mut I) -> ConsumedResult<&'static str, I> {
         self.parser.parse_stream_consumed(input)
     }
 
-    fn parse_lazy(&mut self, input: I) -> ConsumedResult<&'static str, I> {
+    fn parse_lazy(&mut self, input: &mut I) -> ConsumedResult<&'static str, I> {
         self.parser.parse_lazy(input).into()
     }
 
@@ -186,7 +199,8 @@ pub struct BetweenChar<'a: 'b, 'b, P>
 where
     P: Parser,
     P::Input: Stream<Item = char> + 'b,
-    <P::Input as StreamOnce>::Error: ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
+    <P::Input as StreamOnce>::Error:
+        ParseError<char, <P::Input as StreamOnce>::Range, <P::Input as StreamOnce>::Position>,
 {
     parser: Between<Lex<'a, 'b, Token<P::Input>>, Lex<'a, 'b, Token<P::Input>>, P>,
 }
@@ -199,15 +213,17 @@ where
 {
     type Input = I;
     type Output = P::Output;
-    fn parse_stream(&mut self, input: I) -> ParseResult<P::Output, I> {
+    type PartialState = ();
+
+    fn parse_stream(&mut self, input: &mut I) -> ParseResult<P::Output, I> {
         self.parser.parse_stream(input)
     }
 
-    fn parse_stream_consumed(&mut self, input: I) -> ConsumedResult<P::Output, I> {
+    fn parse_stream_consumed(&mut self, input: &mut I) -> ConsumedResult<P::Output, I> {
         self.parser.parse_stream_consumed(input)
     }
 
-    fn parse_lazy(&mut self, input: I) -> ConsumedResult<P::Output, I> {
+    fn parse_lazy(&mut self, input: &mut I) -> ConsumedResult<P::Output, I> {
         self.parser.parse_lazy(input).into()
     }
 
@@ -254,8 +270,8 @@ where
 }
 
 type IdentParser<'a, I> = (
-    Box<Parser<Input = I, Output = char> + 'a>,
-    Box<Parser<Input = I, Output = char> + 'a>,
+    Box<Parser<Input = I, Output = char, PartialState = ()> + 'a>,
+    Box<Parser<Input = I, Output = char, PartialState = ()> + 'a>,
 );
 
 /// A type containing parsers for a specific language.
@@ -266,9 +282,9 @@ pub struct LanguageEnv<'a, I> {
     reserved: Vec<Cow<'static, str>>,
     op: RefCell<IdentParser<'a, I>>,
     op_reserved: Vec<Cow<'static, str>>,
-    comment_line: RefCell<Box<Parser<Input = I, Output = ()> + 'a>>,
-    comment_start: RefCell<Box<Parser<Input = I, Output = ()> + 'a>>,
-    comment_end: RefCell<Box<Parser<Input = I, Output = ()> + 'a>>,
+    comment_line: RefCell<Box<Parser<Input = I, Output = (), PartialState = ()> + 'a>>,
+    comment_start: RefCell<Box<Parser<Input = I, Output = (), PartialState = ()> + 'a>>,
+    comment_end: RefCell<Box<Parser<Input = I, Output = (), PartialState = ()> + 'a>>,
     /// A buffer for storing characters when parsing numbers
     buffer: RefCell<String>,
     _marker: PhantomData<fn(I) -> I>,
@@ -308,13 +324,19 @@ where
             comment_end,
         } = def;
         LanguageEnv {
-            ident: RefCell::new((Box::new(ident_start), Box::new(ident_rest))),
+            ident: RefCell::new((
+                Box::new(no_partial(ident_start)),
+                Box::new(no_partial(ident_rest)),
+            )),
             reserved: ident_reserved,
-            op: RefCell::new((Box::new(op_start), Box::new(op_rest))),
+            op: RefCell::new((
+                Box::new(no_partial(op_start)),
+                Box::new(no_partial(op_rest)),
+            )),
             op_reserved: op_reserved,
-            comment_line: RefCell::new(Box::new(comment_line)),
-            comment_start: RefCell::new(Box::new(comment_start)),
-            comment_end: RefCell::new(Box::new(comment_end)),
+            comment_line: RefCell::new(Box::new(no_partial(comment_line))),
+            comment_start: RefCell::new(Box::new(no_partial(comment_start))),
+            comment_end: RefCell::new(Box::new(no_partial(comment_end))),
             buffer: RefCell::new(String::new()),
             _marker: PhantomData,
         }
@@ -322,7 +344,7 @@ where
 
     fn parser<'b, T>(
         &'b self,
-        parser: fn(&LanguageEnv<'a, I>, I) -> ParseResult<T, I>,
+        parser: fn(&LanguageEnv<'a, I>, &mut I) -> ParseResult<T, I>,
         expected: &'static str,
     ) -> LanguageParser<'a, 'b, I, T> {
         env_parser(self, parser).expected(expected)
@@ -357,23 +379,25 @@ where
         self.parser(LanguageEnv::<I>::parse_ident, "identifier")
     }
 
-    fn parse_ident(&self, input: I) -> ParseResult<String, I> {
+    fn parse_ident(&self, input: &mut I) -> ParseResult<String, I> {
         let mut ident = self.ident.borrow_mut();
-        let (first, input) = try!(ident.0.parse_lazy(input).into());
+        let (first, _) = try!(ident.0.parse_lazy(input).into());
         let mut buffer = String::new();
         buffer.push(first);
-        let mut iter = (&mut *ident.1).iter(input.into_inner());
-        buffer.extend(iter.by_ref());
-        // We definitely consumed the char `first` so make sure that the input is consumed
-        let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
+        let (s, consumed) = {
+            let mut iter = (&mut *ident.1).iter(input);
+            buffer.extend(iter.by_ref());
+            // We definitely consumed the char `first` so make sure that the input is consumed
+            try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)))
+        };
         match self.reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => Err(input.map(|input| {
+            Some(ref _reserved) => Err(consumed.map(|_| {
                 I::Error::from_error(
                     input.position(),
                     StreamError::expected_static_message("identifier"),
                 ).into()
             })),
-            None => Ok((s, input)),
+            None => Ok((s, consumed)),
         }
     }
 
@@ -392,24 +416,28 @@ where
         self.parser(LanguageEnv::<I>::parse_range_ident, "identifier")
     }
 
-    fn parse_range_ident(&self, input: I) -> ParseResult<&'a str, I>
+    fn parse_range_ident(&self, input: &mut I) -> ParseResult<&'a str, I>
     where
         I: RangeStream<Range = &'a str>,
     {
         let mut ident = self.ident.borrow_mut();
-        let (first, rest) = try!(ident.0.parse_lazy(input.clone()).into());
-        let mut iter = (&mut *ident.1).iter(rest.into_inner());
-        let len = iter.by_ref()
-            .fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
-        let (s, input) = try!(take(len).parse_lazy(input).into());
+        let checkpoint = input.checkpoint();
+        let (first, _) = try!(ident.0.parse_lazy(input).into());
+        let len = {
+            let mut iter = (&mut *ident.1).iter(input);
+            iter.by_ref()
+                .fold(first.len_utf8(), |acc, c| c.len_utf8() + acc)
+        };
+        input.reset(checkpoint);
+        let (s, consumed) = try!(take(len).parse_lazy(input).into());
         match self.reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => Err(input.map(|input| {
+            Some(ref _reserved) => Err(consumed.map(|_| {
                 I::Error::from_error(
                     input.position(),
                     StreamError::expected_static_message("identifier"),
                 ).into()
             })),
-            None => Ok((s, input)),
+            None => Ok((s, consumed)),
         }
     }
 
@@ -424,7 +452,7 @@ where
         }
     }
 
-    fn ident_letter(&self, input: I) -> ParseResult<char, I> {
+    fn ident_letter(&self, input: &mut I) -> ParseResult<char, I> {
         self.ident.borrow_mut().1.parse_lazy(input).into()
     }
 
@@ -437,23 +465,25 @@ where
         self.parser(LanguageEnv::<I>::parse_op, "operator")
     }
 
-    fn parse_op(&self, input: I) -> ParseResult<String, I> {
+    fn parse_op(&self, input: &mut I) -> ParseResult<String, I> {
         let mut op = self.op.borrow_mut();
-        let (first, input) = try!(op.0.parse_lazy(input).into());
+        let (first, _) = try!(op.0.parse_lazy(input).into());
         let mut buffer = String::new();
         buffer.push(first);
-        let mut iter = (&mut *op.1).iter(input.into_inner());
-        buffer.extend(iter.by_ref());
-        // We definitely consumed the char `first` so make sure that the input is consumed
-        let (s, input) = try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)));
+        let (s, consumed) = {
+            let mut iter = (&mut *op.1).iter(input);
+            buffer.extend(iter.by_ref());
+            // We definitely consumed the char `first` so make sure that the input is consumed
+            try!(Consumed::Consumed(()).combine(|_| iter.into_result(buffer)))
+        };
         match self.op_reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => Err(input.map(|input| {
+            Some(ref _reserved) => Err(consumed.map(|_| {
                 I::Error::from_error(
                     input.position(),
                     StreamError::expected_static_message("operator"),
                 ).into()
             })),
-            None => Ok((s, input)),
+            None => Ok((s, consumed)),
         }
     }
 
@@ -472,24 +502,28 @@ where
         self.parser(LanguageEnv::<I>::parse_range_op, "operator")
     }
 
-    fn parse_range_op(&self, input: I) -> ParseResult<&'a str, I>
+    fn parse_range_op(&self, input: &mut I) -> ParseResult<&'a str, I>
     where
         I: RangeStream<Range = &'a str>,
     {
         let mut op = self.op.borrow_mut();
-        let (first, rest) = try!(op.0.parse_lazy(input.clone()).into());
-        let mut iter = (&mut *op.1).iter(rest.into_inner());
-        let len = iter.by_ref()
-            .fold(first.len_utf8(), |acc, c| c.len_utf8() + acc);
-        let (s, input) = try!(take(len).parse_lazy(input).into());
+        let checkpoint = input.checkpoint();
+        let (first, _) = try!(op.0.parse_lazy(input).into());
+        let len = {
+            let mut iter = (&mut *op.1).iter(input);
+            iter.by_ref()
+                .fold(first.len_utf8(), |acc, c| c.len_utf8() + acc)
+        };
+        input.reset(checkpoint);
+        let (s, consumed) = try!(take(len).parse_lazy(input).into());
         match self.op_reserved.iter().find(|r| **r == s) {
-            Some(ref _reserved) => Err(input.map(|input| {
+            Some(ref _reserved) => Err(consumed.map(|_| {
                 I::Error::from_error(
                     input.position(),
                     StreamError::expected_static_message("identifier"),
                 ).into()
             })),
-            None => Ok((s, input)),
+            None => Ok((s, consumed)),
         }
     }
 
@@ -511,7 +545,7 @@ where
         }
     }
 
-    fn op_letter(&self, input: I) -> ParseResult<char, I> {
+    fn op_letter(&self, input: &mut I) -> ParseResult<char, I> {
         self.op.borrow_mut().1.parse_lazy(input).into()
     }
 
@@ -524,23 +558,21 @@ where
         self.parser(LanguageEnv::<I>::char_literal_parser, "character")
     }
 
-    fn char_literal_parser(&self, input: I) -> ParseResult<char, I> {
+    fn char_literal_parser(&self, input: &mut I) -> ParseResult<char, I> {
         between(string("\'"), string("\'"), parser(LanguageEnv::<I>::char))
             .expected("character")
             .parse_lazy(input)
             .into()
     }
 
-    fn char(input: I) -> ParseResult<char, I> {
-        let (c, input) = try!(any().parse_lazy(input).into());
+    fn char(input: &mut I) -> ParseResult<char, I> {
+        let (c, consumed) = try!(any().parse_lazy(input).into());
         let mut back_slash_char =
             satisfy(|c| "'\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
-            '\\' => input.combine(|input| back_slash_char.parse_stream(input)),
-            '\'' => unexpected("'")
-                .parse_stream(input.into_inner())
-                .map(|_| unreachable!()),
-            _ => Ok((c, input)),
+            '\\' => consumed.combine(|_| back_slash_char.parse_stream(input)),
+            '\'' => unexpected("'").parse_stream(input).map(|_| unreachable!()),
+            _ => Ok((c, consumed)),
         }
     }
 
@@ -553,25 +585,23 @@ where
         self.parser(LanguageEnv::<I>::string_literal_parser, "string")
     }
 
-    fn string_literal_parser(&self, input: I) -> ParseResult<String, I> {
+    fn string_literal_parser(&self, input: &mut I) -> ParseResult<String, I> {
         between(
             string("\""),
             string("\""),
             many(parser(LanguageEnv::<I>::string_char)),
         ).parse_lazy(input)
-            .into()
+        .into()
     }
 
-    fn string_char(input: I) -> ParseResult<char, I> {
-        let (c, input) = try!(any().parse_lazy(input).into());
+    fn string_char(input: &mut I) -> ParseResult<char, I> {
+        let (c, consumed) = try!(any().parse_lazy(input).into());
         let mut back_slash_char =
             satisfy(|c| "\"\\/bfnrt".chars().find(|x| *x == c).is_some()).map(escape_char);
         match c {
-            '\\' => input.combine(|input| back_slash_char.parse_stream(input)),
-            '"' => unexpected("\"")
-                .parse_stream(input.into_inner())
-                .map(|_| unreachable!()),
-            _ => Ok((c, input)),
+            '\\' => consumed.combine(|_| back_slash_char.parse_stream(input)),
+            '"' => unexpected("\"").parse_stream(input).map(|_| unreachable!()),
+            _ => Ok((c, consumed)),
         }
     }
 
@@ -634,17 +664,17 @@ where
         self.parser(LanguageEnv::integer_parser, "integer")
     }
 
-    fn integer_parser(&self, input: I) -> ParseResult<i64, I> {
+    fn integer_parser(&self, input: &mut I) -> ParseResult<i64, I> {
         let mut buffer = self.buffer.borrow_mut();
         buffer.clear();
-        let ((), input) = try!(LanguageEnv::push_digits(&mut buffer, input));
+        let ((), consumed) = try!(LanguageEnv::push_digits(&mut buffer, input));
         match buffer.parse() {
-            Ok(i) => Ok((i, input)),
-            Err(_) => Err(input.map(|input| I::Error::empty(input.position()).into())),
+            Ok(i) => Ok((i, consumed)),
+            Err(_) => Err(consumed.map(|()| I::Error::empty(input.position()).into())),
         }
     }
 
-    fn push_digits(buffer: &mut String, input: I) -> ParseResult<(), I> {
+    fn push_digits(buffer: &mut String, input: &mut I) -> ParseResult<(), I> {
         let mut iter = digit().iter(input);
         buffer.extend(&mut iter);
         iter.into_result(())
@@ -656,58 +686,27 @@ where
     }
 
     pub fn float_<'b>(&'b self) -> LanguageParser<'a, 'b, I, f64> {
-        self.parser(LanguageEnv::float_parser, "float")
+        self.parser(|_, input| float().parse_stream(input), "float")
     }
+}
 
-    fn float_parser(&self, input: I) -> ParseResult<f64, I> {
-        let mut buffer = self.buffer.borrow_mut();
-        buffer.clear();
-
-        let (sign, input) = try!(optional(char('-')).parse_lazy(input).into());
-        if let Some(sign) = sign {
-            buffer.push(sign);
-        }
-        let ((), input) = try!(input.combine(|input| LanguageEnv::push_digits(&mut buffer, input)));
-        let (_, input) = try!(input.combine(|input| {
-            look_ahead(char('e').or(char('E')).or(char('.')))
-                .parse_lazy(input)
-                .into()
-        }));
-
-        let (dot, mut result_input) =
-            try!(input.combine(|input| optional(char('.')).parse_lazy(input).into()));
-        let input = if let Some(dot) = dot {
-            buffer.push(dot);
-            let ((), input) = try!(
-                result_input
-                    .clone()
-                    .combine(|input| LanguageEnv::push_digits(&mut buffer, input))
-            );
-            input
-        } else {
-            result_input
-        };
-        let (exp, input) = try!(input.combine(|input| {
-            optional((char('e').or(char('E')), optional(char('-')))).parse_stream(input)
-        }));
-        result_input = input;
-        if let Some((exp, sign)) = exp {
-            buffer.push(exp);
-            if let Some(sign) = sign {
-                buffer.push(sign);
-            }
-            let ((), input) = try!(
-                result_input
-                    .clone()
-                    .combine(|input| LanguageEnv::push_digits(&mut buffer, input))
-            );
-            result_input = input;
-        }
-        match buffer.parse() {
-            Ok(f) => Ok((f, result_input)),
-            Err(_) => Err(result_input.map(|input| I::Error::empty(input.position()).into())),
-        }
-    }
+pub fn float<I>() -> impl Parser<Input = I, Output = f64>
+where
+    I: Stream<Item = char>,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    from_str(recognize::<String, _>((
+        optional(token('-')),
+        token('0').or((
+            skip_many1(digit()),
+            optional((token('.'), skip_many(digit()))),
+        )
+            .map(|_| '0')),
+        optional((
+            (one_of("eE".chars()), optional(one_of("+-".chars()))),
+            skip_many1(digit()),
+        )),
+    ))).expected("float")
 }
 
 fn escape_char(c: char) -> char {
@@ -741,7 +740,6 @@ pub struct Assoc {
     pub precedence: i32,
 }
 
-
 /// Expression parser which handles binary operators
 #[derive(Clone, Debug)]
 pub struct Expression<O, P, F> {
@@ -754,12 +752,12 @@ pub struct Expression<O, P, F> {
 macro_rules! tryb {
     ($e: expr) => {
         match $e {
-            EmptyOk((x, input)) => (x, Consumed::Empty(input)),
-            ConsumedOk((x, input)) => (x, Consumed::Consumed(input)),
+            EmptyOk(x) => (x, Consumed::Empty(())),
+            ConsumedOk(x) => (x, Consumed::Consumed(())),
             EmptyErr(_) => break,
             ConsumedErr(err) => return Err(Consumed::Consumed(err.into())),
         }
-    }
+    };
 }
 
 impl<O, P, F, T> Expression<O, P, F>
@@ -772,29 +770,39 @@ where
         &mut self,
         min_precedence: i32,
         mut l: P::Output,
-        mut input: Consumed<P::Input>,
+        mut consumed: Consumed<()>,
+        input: &mut P::Input,
     ) -> ParseResult<P::Output, P::Input> {
         loop {
-            let ((op, op_assoc), rest) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
+            let checkpoint = input.checkpoint();
+            let ((op, op_assoc), rest) = tryb!(self.op.parse_lazy(input));
+
             if op_assoc.precedence < min_precedence {
-                return Ok((l, input));
+                input.reset(checkpoint);
+                return Ok((l, consumed));
             }
-            let (mut r, rest) = try!(rest.combine(|rest| self.term.parse_stream(rest)));
-            input = rest;
+
+            let (mut r, rest) = try!(rest.combine(|_| self.term.parse_stream(input)));
+            consumed = rest;
+
             loop {
-                let ((_, assoc), _) = tryb!(self.op.parse_lazy(input.clone().into_inner()));
+                let checkpoint = input.checkpoint();
+                let ((_, assoc), _) = tryb!(self.op.parse_lazy(input));
+                input.reset(checkpoint);
+
                 let proceed = assoc.precedence > op_assoc.precedence
                     || assoc.fixity == Fixity::Right && assoc.precedence == op_assoc.precedence;
                 if !proceed {
                     break;
                 }
-                let (new_r, rest) = try!(self.parse_expr(assoc.precedence, r, input));
+
+                let (new_r, rest) = try!(self.parse_expr(assoc.precedence, r, consumed, input));
                 r = new_r;
-                input = rest;
+                consumed = rest;
             }
             l = (self.f)(l, op, r);
         }
-        Ok((l, input))
+        Ok((l, consumed))
     }
 }
 
@@ -806,10 +814,11 @@ where
 {
     type Input = P::Input;
     type Output = P::Output;
+    type PartialState = ();
 
-    fn parse_lazy(&mut self, input: Self::Input) -> ConsumedResult<Self::Output, Self::Input> {
-        let (l, input) = ctry!(self.term.parse_lazy(input).into());
-        self.parse_expr(0, l, input).into()
+    fn parse_lazy(&mut self, input: &mut Self::Input) -> ConsumedResult<Self::Output, Self::Input> {
+        let (l, consumed) = ctry!(self.term.parse_lazy(input));
+        self.parse_expr(0, l, consumed, input).into()
     }
     fn add_error(&mut self, errors: &mut Tracked<<P::Input as StreamOnce>::Error>) {
         self.term.add_error(errors);
@@ -872,9 +881,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use combine::*;
     use combine::char::{alpha_num, letter, string};
     use combine::easy::Error;
+    use combine::parser::combinator::opaque;
+    use combine::*;
 
     fn env<I>() -> LanguageEnv<'static, I>
     where
@@ -936,9 +946,6 @@ mod tests {
         let result = env().float().easy_parse("123.456E-10  ");
         assert_eq!(result, Ok((123.456E-10, "")));
 
-        let result = env().float().easy_parse("123 ");
-        assert!(result.is_err());
-
         let result = env().float().easy_parse("123e1 ");
         assert_eq!(result, Ok((123e1, "")));
     }
@@ -975,7 +982,6 @@ mod tests {
         Expr::Op(Box::new(l), op, Box::new(r))
     }
 
-
     fn test_expr1() -> (&'static str, Expr) {
         let mul_2_3 = op(Int(2), "*", Int(3));
         let div_4_5 = op(Int(4), "/", Int(5));
@@ -993,40 +999,41 @@ mod tests {
         )
     }
 
-
     parser!{
     fn op_parser[I]()(I) -> (&'static str, Assoc)
         where [I: Stream<Item = char>,]
     {
-        let mut ops = ["*", "/", "+", "-", "^", "&&", "||", "!!"]
-            .iter()
-            .cloned()
-            .map(string)
-            .collect::<Vec<_>>();
-        choice(&mut ops[..])
-            .map(|s| {
-                let prec = match s {
-                    "||" => 2,
-                    "&&" => 3,
-                    "+" | "-" => 6,
-                    "*" | "/" => 7,
-                    "^" => 8,
-                    "!!" => 9,
-                    _ => panic!("Impossible"),
-                };
-                let fixity = match s {
-                    "+" | "-" | "*" | "/" => Fixity::Left,
-                    "^" | "&&" | "||" => Fixity::Right,
-                    _ => panic!("Impossible"),
-                };
-                (
-                    s,
-                    Assoc {
-                        fixity: fixity,
-                        precedence: prec,
-                    },
-                )
-            })
+        opaque(|f| {
+            let mut ops = ["*", "/", "+", "-", "^", "&&", "||", "!!"]
+                .iter()
+                .cloned()
+                .map(string)
+                .collect::<Vec<_>>();
+            f(&mut choice(&mut ops[..])
+                .map(|s| {
+                    let prec = match s {
+                        "||" => 2,
+                        "&&" => 3,
+                        "+" | "-" => 6,
+                        "*" | "/" => 7,
+                        "^" => 8,
+                        "!!" => 9,
+                        _ => panic!("Impossible"),
+                    };
+                    let fixity = match s {
+                        "+" | "-" | "*" | "/" => Fixity::Left,
+                        "^" | "&&" | "||" => Fixity::Right,
+                        _ => panic!("Impossible"),
+                    };
+                    (
+                        s,
+                        Assoc {
+                            fixity: fixity,
+                            precedence: prec,
+                        },
+                    )
+                }))
+        })
     }
     }
 
