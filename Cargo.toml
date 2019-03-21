@@ -1,6 +1,6 @@
 [package]
 name = "combine-language"
-version = "3.0.2-alpha.0"
+version = "3.0.2"
 authors = ["Markus Westerlind <marwes91@gmail.com>"]
 
 build = "build.rs"
