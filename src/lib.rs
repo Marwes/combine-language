@@ -697,8 +697,15 @@ where
 {
     from_str(recognize::<String, _>((
         optional(token('-')),
-        optional(skip_many1(digit())),
-        optional((token('.'), skip_many(digit()))),
+        (token('.').and(skip_many1(digit())).map(|_| '0')).or((
+            token('0').skip(not_followed_by(digit())).or((
+                one_of("123456789".chars()),
+                skip_many(digit()),
+            )
+                .map(|_| '0')),
+            optional((token('.'), skip_many(digit()))),
+        )
+            .map(|_| '0')),
         optional((
             (one_of("eE".chars()), optional(one_of("+-".chars()))),
             skip_many1(digit()),
@@ -957,6 +964,15 @@ mod tests {
 
         let result = env().float().easy_parse("1e+0  ");
         assert_eq!(result, Ok((1.0, "")));
+
+        let result = env().float().easy_parse("  ");
+        assert!(result.is_err());
+
+        let result = env().float().easy_parse(". ");
+        assert!(result.is_err());
+
+        let result = env().float().easy_parse("000.1  ");
+        assert!(result.is_err());
     }
 
     #[test]
