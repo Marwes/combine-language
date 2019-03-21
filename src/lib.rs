@@ -697,8 +697,12 @@ where
 {
     from_str(recognize::<String, _>((
         optional(token('-')),
-        token('0').or((
-            skip_many1(digit()),
+        (token('.').and(skip_many1(digit())).map(|_| '0')).or((
+            token('0').skip(not_followed_by(digit())).or((
+                one_of("123456789".chars()),
+                skip_many(digit()),
+            )
+                .map(|_| '0')),
             optional((token('.'), skip_many(digit()))),
         )
             .map(|_| '0')),
@@ -948,6 +952,27 @@ mod tests {
 
         let result = env().float().easy_parse("123e1 ");
         assert_eq!(result, Ok((123e1, "")));
+
+        let result = env().float().easy_parse("0.1  ");
+        assert_eq!(result, Ok((0.1, "")));
+
+        let result = env().float().easy_parse(".1  ");
+        assert_eq!(result, Ok((0.1, "")));
+
+        let result = env().float().easy_parse("1.  ");
+        assert_eq!(result, Ok((1.0, "")));
+
+        let result = env().float().easy_parse("1e+0  ");
+        assert_eq!(result, Ok((1.0, "")));
+
+        let result = env().float().easy_parse("  ");
+        assert!(result.is_err());
+
+        let result = env().float().easy_parse(". ");
+        assert!(result.is_err());
+
+        let result = env().float().easy_parse("000.1  ");
+        assert!(result.is_err());
     }
 
     #[test]
