@@ -144,9 +144,9 @@ pub type LanguageParser<'a, 'b, I, T> =
 pub type LexLanguageParser<'a, 'b, I, T> = Lex<'a, 'b, LanguageParser<'a, 'b, I, T>, I>;
 
 /// A lexing parser for a language
-pub struct Lex<'a: 'b, 'b, P, Input>
+pub struct Lex<'a, 'b, P, Input>
 where
-    Input: Stream<Token = char> + 'b,
+    Input: Stream<Token = char>,
 {
     parser: Skip<P, WhiteSpace<'a, 'b, Input>>,
 }
@@ -167,9 +167,9 @@ where
 
 /// A whitespace parser for a language
 #[derive(Clone)]
-pub struct WhiteSpace<'a: 'b, 'b, I>
+pub struct WhiteSpace<'a, 'b, I>
 where
-    I: Stream<Token = char> + 'b,
+    I: Stream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
 {
     env: &'b LanguageEnv<'a, I>,
@@ -177,7 +177,7 @@ where
 
 impl<'a, 'b, Input> Parser<Input> for WhiteSpace<'a, 'b, Input>
 where
-    Input: Stream<Token = char> + 'b,
+    Input: Stream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     type Output = ();
@@ -231,9 +231,9 @@ where
 }
 
 /// Parses a reserved word
-pub struct Reserved<'a: 'b, 'b, Input>
+pub struct Reserved<'a, 'b, Input>
 where
-    Input: Stream<Token = char> + 'b,
+    Input: Stream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     parser: Lex<
@@ -261,10 +261,10 @@ where
 }
 
 /// Parses `P` between two delimiter characters
-pub struct BetweenChar<'a: 'b, 'b, P, Input>
+pub struct BetweenChar<'a, 'b, P, Input>
 where
     P: Parser<Input>,
-    Input: Stream<Token = char> + 'b,
+    Input: Stream<Token = char>,
     <Input as StreamOnce>::Error:
         ParseError<char, <Input as StreamOnce>::Range, <Input as StreamOnce>::Position>,
 {
