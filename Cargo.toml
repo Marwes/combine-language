@@ -18,10 +18,14 @@ keywords = ["parser", "combinators", "ll", "language", "combine"]
 license = "MIT"
 
 [dependencies]
-combine = "4"
+combine = { version = "4", default-features = false }
 
 [dev-dependencies]
 skeptic = "0.9.0"
 
 [build-dependencies]
 skeptic = "0.9.0"
+
+[features]
+default = ["std"]
+std = ["combine/std"]

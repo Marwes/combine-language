@@ -31,10 +31,23 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
 #[macro_use]
 extern crate combine;
 
+#[cfg(not(feature = "std"))]
+extern crate core as std;
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
+
+#[cfg(feature = "std")]
 use std::borrow::Cow;
+
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::str;
@@ -42,7 +55,7 @@ use std::str;
 use combine::{
     any, attempt, between, error,
     error::{Commit, ParseResult::*, StdParseResult, StreamError, Tracked},
-    from_str, many, not_followed_by, one_of, optional, parser,
+    many, not_followed_by, one_of, optional, parser,
     parser::{
         char::{self, char, digit, space},
         combinator::{no_partial, recognize, NotFollowedBy, Try},
@@ -53,7 +66,7 @@ use combine::{
         token::{tokens_cmp, value, Token, TokensCmp, Value},
     },
     satisfy, skip_many, skip_many1,
-    stream::{RangeStream, ResetStream, Stream, StreamOnce},
+    stream::{RangeStream, ResetStream, Stream, StreamErrorFor, StreamOnce},
     token, unexpected, ErrorOffset, ParseError, ParseResult, Parser,
 };
 
@@ -756,7 +769,7 @@ where
     I: Stream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
 {
-    from_str(recognize::<String, _, _>((
+    recognize::<String, _, _>((
         optional(token('-')),
         (token('.').and(skip_many1(digit())).map(|_| '0')).or((
             token('0').skip(not_followed_by(digit())).or((
@@ -771,7 +784,8 @@ where
             (one_of("eE".chars()), optional(one_of("+-".chars()))),
             skip_many1(digit()),
         )),
-    )))
+    ))
+    .and_then(|s| s.parse().map_err(StreamErrorFor::<I>::message_format))
     .expected("float")
 }
 
